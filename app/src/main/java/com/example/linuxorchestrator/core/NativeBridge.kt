@@ -6,6 +6,8 @@ object NativeBridge {
     }
 
     external fun isDirectRoot(): Boolean
+
     external fun getSELinuxMode(): String
+
     external fun runCommandNative(command: String): String
 }

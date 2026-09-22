@@ -24,15 +24,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(
-                colorScheme = darkColorScheme(
-                    primary = Color(0xFF4CAF50),
-                    background = Color(0xFF121212),
-                    surface = Color(0xFF1E1E1E)
-                )
+                colorScheme =
+                    darkColorScheme(
+                        primary = Color(0xFF4CAF50),
+                        background = Color(0xFF121212),
+                        surface = Color(0xFF1E1E1E),
+                    ),
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = MaterialTheme.colorScheme.background,
                 ) {
                     DashboardScreen()
                 }
@@ -58,22 +59,23 @@ fun DashboardScreen() {
     }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
             text = "Linux Orchestrator",
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
+            color = MaterialTheme.colorScheme.primary,
         )
 
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(text = "System Diagnostics (Phase 0)", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
@@ -86,22 +88,22 @@ fun DashboardScreen() {
 
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(text = "Terminal Test Box", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                
+
                 OutlinedTextField(
                     value = commandInput,
                     onValueChange = { commandInput = it },
                     label = { Text("Command") },
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    singleLine = true,
                 )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Button(
                         onClick = {
@@ -112,7 +114,7 @@ fun DashboardScreen() {
                             }
                         },
                         modifier = Modifier.weight(1f),
-                        enabled = !isExecuting
+                        enabled = !isExecuting,
                     ) {
                         Text("Native Shell")
                     }
@@ -126,7 +128,7 @@ fun DashboardScreen() {
                             }
                         },
                         modifier = Modifier.weight(1f),
-                        enabled = !isExecuting
+                        enabled = !isExecuting,
                     ) {
                         Text("Root (SU)")
                     }
@@ -137,21 +139,21 @@ fun DashboardScreen() {
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color.Black),
-            shape = RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(8.dp),
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
                     text = "Console Output:",
                     fontSize = 12.sp,
                     color = Color.Gray,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = if (isExecuting) "Executing..." else commandOutput,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 13.sp,
-                    color = Color(0xFF00FF66)
+                    color = Color(0xFF00FF66),
                 )
             }
         }
