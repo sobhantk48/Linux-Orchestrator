@@ -22,6 +22,8 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.4
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -29,4 +31,4 @@ jobs:
           ndk-version: r26b
 
       - name: Build with Gradle
-        run: ./gradlew assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace
