@@ -10,3 +10,4 @@
 .cxx
 *.apk
 *.aab
+build_cpp/

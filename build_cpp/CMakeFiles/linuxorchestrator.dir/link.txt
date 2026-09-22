@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC  -O3 -Wall -g -shared -Wl,-soname,liblinuxorchestrator.so -o liblinuxorchestrator.so "CMakeFiles/linuxorchestrator.dir/native-lib.cpp.o" CMakeFiles/linuxorchestrator.dir/shell_executor.cpp.o CMakeFiles/linuxorchestrator.dir/root_checker.cpp.o  -llog-lib-NOTFOUND 

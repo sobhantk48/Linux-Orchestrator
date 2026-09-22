@@ -1,3 +1,0 @@
-/home/sobhan/LinuxOrchestrator/build_cpp/CMakeFiles/linuxorchestrator.dir
-/home/sobhan/LinuxOrchestrator/build_cpp/CMakeFiles/edit_cache.dir
-/home/sobhan/LinuxOrchestrator/build_cpp/CMakeFiles/rebuild_cache.dir
