@@ -1,14 +1,29 @@
 #include <jni.h>
 #include <string>
-#include <android/log.h>
+#include "root_checker.h"
+#include "shell_executor.h"
 
-#define TAG "LinuxOrchestratorNative"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+extern "C" {
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_linuxorchestrator_app_MainActivity_stringFromJNI(
-    JNIEnv* env,
-    jobject /* this */) {
-    std::string hello = "Linux Orchestrator Native Core v0.1.0 Ready";
-    return env->NewStringUTF(hello.c_str());
+JNIEXPORT jboolean JNICALL
+Java_com_example_linuxorchestrator_core_NativeBridge_isDirectRoot(JNIEnv *env, jobject /* this */) {
+    return static_cast<jboolean>(orchestrator::isRootAvailable());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_linuxorchestrator_core_NativeBridge_getSELinuxMode(JNIEnv *env, jobject /* this */) {
+    std::string status = orchestrator::getSELinuxStatus();
+    return env->NewStringUTF(status.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_example_linuxorchestrator_core_NativeBridge_runCommandNative(JNIEnv *env, jobject /* this */, jstring command) {
+    const char *cmdCStr = env->GetStringUTFChars(command, nullptr);
+    orchestrator::CommandResult result = orchestrator::ShellExecutor::executeCommand(cmdCStr);
+    env->ReleaseStringUTFChars(command, cmdCStr);
+    
+    // برگرداندن خروجی استاندارد و خطا
+    return env->NewStringUTF(result.output.c_str());
+}
+
 }
