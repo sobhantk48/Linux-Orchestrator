@@ -7,64 +7,77 @@
 #include <X11/Xlib.h>
 #include <X11/extensions/XTest.h>
 
-#define ABSTRACT_SOCKET_NAME "sobhan_x11_touch"
+#define SOCKET_PATH "/tmp/sobhan_x11_touch"
+
+// Packet: [type (1B)][data1 (4B)][data2 (4B)] -> Total 9 Bytes
+// type 0: Motion (x=data1, y=data2)
+// type 1: Button Press (button=data1)
+// type 2: Button Release (button=data1)
+// type 3: Key Press (keysym=data1)
+// type 4: Key Release (keysym=data1)
 
 int main() {
-    Display *display = XOpenDisplay(NULL);
-    if (!display) {
-        fprintf(stderr, "[!] Cannot open X display for touch.\n");
+    Display *dpy = XOpenDisplay(NULL);
+    if (!dpy) {
+        fprintf(stderr, "[-] Cannot open display :0\n");
         return 1;
     }
 
-    int server_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    int server_fd, client_fd;
     struct sockaddr_un addr;
+
+    unlink(SOCKET_PATH);
+    server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (server_fd < 0) {
+        perror("[-] socket");
+        return 1;
+    }
+
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    addr.sun_path[0] = '\0';
-    strncpy(addr.sun_path + 1, ABSTRACT_SOCKET_NAME, sizeof(addr.sun_path) - 2);
+    strncpy(addr.sun_path, SOCKET_PATH, sizeof(addr.sun_path) - 1);
 
-    socklen_t addr_len = sizeof(sa_family_t) + 1 + strlen(ABSTRACT_SOCKET_NAME);
-
-    if (bind(server_sock, (struct sockaddr*)&addr, addr_len) < 0) {
-        perror("[!] bind touch");
+    if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        perror("[-] bind");
         return 1;
     }
-    listen(server_sock, 1);
-    printf("[+] Touch Server listening on abstract socket @%s...\n", ABSTRACT_SOCKET_NAME);
 
-    unsigned char buf[9];
+    listen(server_fd, 5);
+    printf("[+] Input server (touch + keyboard) listening on %s\n", SOCKET_PATH);
+
     while (1) {
-        int client_sock = accept(server_sock, NULL, NULL);
-        if (client_sock < 0) continue;
-        printf("[+] Touch client connected.\n");
+        client_fd = accept(server_fd, NULL, NULL);
+        if (client_fd < 0) continue;
 
-        while (1) {
-            int read_bytes = 0;
-            while (read_bytes < 9) {
-                int r = read(client_sock, buf + read_bytes, 9 - read_bytes);
-                if (r <= 0) goto client_disconnect;
-                read_bytes += r;
-            }
+        unsigned char buf[9];
+        while (read(client_fd, buf, 9) == 9) {
+            unsigned char type = buf[0];
+            int d1 = (buf[1] << 24) | (buf[2] << 16) | (buf[3] << 8) | buf[4];
+            int d2 = (buf[5] << 24) | (buf[6] << 16) | (buf[7] << 8) | buf[8];
 
-            int type = buf[0]; // 0: Down, 1: Move, 2: Up
-            // Little-endian parsing for X and Y
-            int x = buf[1] | (buf[2] << 8) | (buf[3] << 16) | (buf[4] << 24);
-            int y = buf[5] | (buf[6] << 8) | (buf[7] << 16) | (buf[8] << 24);
-
-            XTestFakeMotionEvent(display, -1, x, y, CurrentTime);
             if (type == 0) {
-                XTestFakeButtonEvent(display, 1, True, CurrentTime);
+                // Motion
+                XTestFakeMotionEvent(dpy, 0, d1, d2, CurrentTime);
+            } else if (type == 1) {
+                // Mouse Press
+                XTestFakeButtonEvent(dpy, d1, True, CurrentTime);
             } else if (type == 2) {
-                XTestFakeButtonEvent(display, 1, False, CurrentTime);
+                // Mouse Release
+                XTestFakeButtonEvent(dpy, d1, False, CurrentTime);
+            } else if (type == 3) {
+                // Key Press
+                KeyCode kc = XKeysymToKeycode(dpy, (KeySym)d1);
+                if (kc) XTestFakeKeyEvent(dpy, kc, True, CurrentTime);
+            } else if (type == 4) {
+                // Key Release
+                KeyCode kc = XKeysymToKeycode(dpy, (KeySym)d1);
+                if (kc) XTestFakeKeyEvent(dpy, kc, False, CurrentTime);
             }
-            XFlush(display);
+            XFlush(dpy);
         }
-client_disconnect:
-        close(client_sock);
-        printf("[-] Touch client disconnected.\n");
+        close(client_fd);
     }
 
-    close(server_sock);
-    XCloseDisplay(display);
+    XCloseDisplay(dpy);
     return 0;
 }

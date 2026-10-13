@@ -1,0 +1,35 @@
+#!/bin/bash
+export DISPLAY=:0
+export XDG_RUNTIME_DIR=/tmp
+
+# دریافت رزولوشن به عنوان آرگومان اول (در صورت عدم ارسال پیش‌فرض 2400x1080x24)
+RES="${1:-2400x1080x24}"
+
+# پاکسازی کامل پروسه‌ها
+pkill -9 -f Xvfb 2>/dev/null
+pkill -9 -f frame_server 2>/dev/null
+pkill -9 -f touch_server 2>/dev/null
+pkill -9 -f xfce4 2>/dev/null
+sleep 1
+
+# پاکسازی سوکت‌ها و قفل‌ها
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /tmp/sobhan_x11_* 2>/dev/null
+mkdir -p /tmp/.X11-unix
+chmod 1777 /tmp /tmp/.X11-unix
+
+# اجرای Xvfb
+echo "[+] Starting Xvfb with $RES..."
+Xvfb :0 -screen 0 $RES -listen tcp &
+sleep 2
+
+# اجرای سرورها
+echo "[+] Starting frame & touch servers..."
+/usr/local/bin/frame_server &
+/usr/local/bin/touch_server &
+sleep 1
+
+# اجرای دسکتاپ
+echo "[+] Launching XFCE Desktop..."
+DISPLAY=:0 dbus-launch --exit-with-session xfce4-session &
+
+echo "[✓] Desktop started successfully!"

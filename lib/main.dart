@@ -675,7 +675,7 @@ chmod 755 /data/ubuntu-login.sh
                   _buildTerminalToolbar(),
                 ],
               ),
-              X11DisplayView(
+              X11View(
                 onBackToTerminal: () {
                   setState(() => _activeTabIndex = 0);
                 },
