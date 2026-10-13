@@ -130,7 +130,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
   bool _ctrlPressed = false;
   bool _altPressed = false;
   bool _hasSelection = false;
-  int _activeTabIndex = 0; // 0: Terminal, 1: Desktop
+  int _activeTabIndex = 0;
 
   @override
   void initState() {
@@ -211,6 +211,35 @@ class _TerminalScreenState extends State<TerminalScreen> {
     }
   }
 
+  Future<void> _extractServerBinaries(String tempPath) async {
+    try {
+      final binaries = ['frame_server', 'touch_server'];
+      for (final bin in binaries) {
+        final byteData = await rootBundle.load('assets/bin/$bin');
+        final targetFile = File('$tempPath/$bin');
+        await targetFile.writeAsBytes(
+          byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
+          flush: true,
+        );
+      }
+
+      await Process.run('su', [
+        '-c',
+        '''
+mkdir -p /data/ubuntu/usr/local/bin
+cp $tempPath/frame_server /data/ubuntu/usr/local/bin/frame_server
+cp $tempPath/touch_server /data/ubuntu/usr/local/bin/touch_server
+chmod 755 /data/ubuntu/usr/local/bin/frame_server
+chmod 755 /data/ubuntu/usr/local/bin/touch_server
+rm -f $tempPath/frame_server $tempPath/touch_server
+''',
+      ]);
+      session.log('\x1B[1;32m[+] X11 bridge binaries installed.\x1B[0m');
+    } catch (e) {
+      session.log('\x1B[1;33m[!] Warning extracting bridge binaries: $e\x1B[0m');
+    }
+  }
+
   Future<void> _setupAndStartSession() async {
     setState(() {
       session.isInitializing = true;
@@ -235,11 +264,11 @@ class _TerminalScreenState extends State<TerminalScreen> {
       }
 
       final exists = checkBash.stdout.toString().trim() == 'EXISTS';
+      final tempDir = await getTemporaryDirectory();
 
       if (!exists) {
         session.log('\x1B[1;33m[*] Ubuntu RootFS not found. Installing from assets...\x1B[0m');
 
-        final tempDir = await getTemporaryDirectory();
         final tempTarPath = '${tempDir.path}/ubuntu-base-arm64.tar.gz';
 
         session.log('[*] Extracting package from APK...');
@@ -266,6 +295,8 @@ chmod 755 /data/ubuntu
         session.log('\x1B[1;32m[+] Ubuntu RootFS installed successfully!\x1B[0m');
       }
 
+      await _extractServerBinaries(tempDir.path);
+
       session.log('[*] Preparing launcher and network config...');
       const launcherScript = r'''
 cat << 'LAUNCHER_EOF' > /data/ubuntu-login.sh
@@ -275,6 +306,8 @@ UBUNTU_DIR="/data/ubuntu"
 cleanup() {
   echo ""
   echo "[*] Cleaning up mounts..."
+  pkill -f /usr/local/bin/frame_server 2>/dev/null
+  pkill -f /usr/local/bin/touch_server 2>/dev/null
   umount -l $UBUNTU_DIR/sdcard 2>/dev/null
   umount -l $UBUNTU_DIR/sys 2>/dev/null
   umount -l $UBUNTU_DIR/proc 2>/dev/null
@@ -548,14 +581,12 @@ chmod 755 /data/ubuntu-login.sh
           _buildKeyButton('◀', onTap: () => session.sendKey([0x1B, 0x5B, 0x44])),
           _buildKeyButton('▶', onTap: () => session.sendKey([0x1B, 0x5B, 0x43])),
           
-          // جداکننده بصری
           Container(
             margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
             width: 1.5,
             color: Colors.white24,
           ),
           
-          // دکمه‌های جابجایی تب در انتهای تولبار
           _buildKeyButton(
             'Terminal',
             icon: Icons.terminal,
