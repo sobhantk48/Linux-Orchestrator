@@ -1,11 +1,10 @@
 name: my_terminal
-description: "A new Flutter project."
+description: "A standalone terminal and desktop environment for Android."
 publish_to: 'none'
-
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.5.4
+  sdk: ^3.5.0
 
 dependencies:
   flutter:
@@ -30,6 +29,8 @@ flutter:
   assets:
     - assets/rootfs/ubuntu-base-arm64.tar.gz
     - assets/bin/
+    - assets/packages/
+    - assets/scripts/
 
 flutter_launcher_icons:
   android: "launcher_icon"

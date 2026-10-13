@@ -1,16 +1,19 @@
 #!/bin/bash
 set -e
 
-echo "[+] Updating apt and installing desktop packages..."
-apt update
-apt install -y xvfb x11-utils x11-xserver-utils openbox xfce4-session xfce4 xfce4-terminal libx11-dev libxtst-dev gcc make dbus-x11
+BUNDLE_PATH="/tmp/desktop_bundle.tar.gz"
 
-echo "[+] Compiling input/touch server..."
-gcc -O2 /data/ubuntu/root/touch_server.c -o /usr/local/bin/touch_server -lX11 -lXtst 2>/dev/null || \
-gcc -O2 /tmp/touch_server.c -o /usr/local/bin/touch_server -lX11 -lXtst
+echo "[+] Checking offline desktop bundle..."
+if [ -f "$BUNDLE_PATH" ]; then
+    echo "[+] Extracting pre-installed desktop bundle..."
+    tar -xzf "$BUNDLE_PATH" -C /
+    echo "[+] Desktop bundle extracted successfully."
+else
+    echo "[!] Desktop bundle not found in /tmp!"
+fi
 
-cp /tmp/start_desktop /usr/local/bin/start_desktop 2>/dev/null || true
-chmod +x /usr/local/bin/start_desktop
-chmod +x /usr/local/bin/touch_server
+chmod +x /usr/local/bin/start_desktop 2>/dev/null || true
+chmod +x /usr/local/bin/touch_server 2>/dev/null || true
+chmod +x /usr/local/bin/frame_server 2>/dev/null || true
 
-echo "[✓] Setup completed successfully!"
+echo "[✓] Offline setup completed successfully!"
