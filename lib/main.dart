@@ -588,16 +588,8 @@ chmod 755 /data/ubuntu-login.sh
           ),
           
           _buildKeyButton(
-            'Terminal',
-            icon: Icons.terminal,
-            isActive: _activeTabIndex == 0,
-            highlightColor: const Color(0xFF388E3C),
-            onTap: () => setState(() => _activeTabIndex = 0),
-          ),
-          _buildKeyButton(
             'Desktop',
             icon: Icons.desktop_windows,
-            isActive: _activeTabIndex == 1,
             highlightColor: const Color(0xFF388E3C),
             onTap: () => setState(() => _activeTabIndex = 1),
           ),
@@ -621,75 +613,73 @@ chmod 755 /data/ubuntu-login.sh
         body: SafeArea(
           top: true,
           bottom: true,
-          child: Column(
+          child: IndexedStack(
+            index: _activeTabIndex,
             children: [
-              Expanded(
-                child: IndexedStack(
-                  index: _activeTabIndex,
-                  children: [
-                    Column(
-                      children: [
-                        if (session.rootError)
-                          Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                            color: Colors.red.shade900,
-                            child: Row(
-                              children: [
-                                const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
-                                const SizedBox(width: 8),
-                                const Expanded(
-                                  child: Text(
-                                    'دسترسی روت برقرار نشد! لطفاً در KernelSU مجوز Superuser را تایید کنید.',
-                                    style: TextStyle(color: Colors.white, fontSize: 12),
-                                  ),
-                                ),
-                                TextButton(
-                                  style: TextButton.styleFrom(
-                                    backgroundColor: Colors.white12,
-                                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                                  ),
-                                  onPressed: _setupAndStartSession,
-                                  child: const Text('تلاش مجدد', style: TextStyle(color: Colors.white, fontSize: 12)),
-                                ),
-                              ],
+              Column(
+                children: [
+                  if (session.rootError)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                      color: Colors.red.shade900,
+                      child: Row(
+                        children: [
+                          const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'دسترسی روت برقرار نشد! لطفاً در KernelSU مجوز Superuser را تایید کنید.',
+                              style: TextStyle(color: Colors.white, fontSize: 12),
                             ),
                           ),
-                        Expanded(
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              return Listener(
-                                onPointerMove: (e) => _handlePointerMove(e, constraints),
-                                onPointerUp: (_) => _stopAutoScroll(),
-                                onPointerCancel: (_) => _stopAutoScroll(),
-                                child: Scrollbar(
-                                  controller: session.terminalScrollController,
-                                  child: TerminalView(
-                                    session.terminal,
-                                    controller: session.terminalController,
-                                    scrollController: session.terminalScrollController,
-                                    autofocus: true,
-                                    backgroundOpacity: 1.0,
-                                    textStyle: const TerminalStyle(
-                                      fontSize: 13,
-                                      fontFamily: 'monospace',
-                                    ),
-                                    autoResize: true,
-                                    simulateScroll: false,
-                                    readOnly: session.isInitializing,
-                                  ),
-                                ),
-                              );
-                            },
+                          TextButton(
+                            style: TextButton.styleFrom(
+                              backgroundColor: Colors.white12,
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                            ),
+                            onPressed: _setupAndStartSession,
+                            child: const Text('تلاش مجدد', style: TextStyle(color: Colors.white, fontSize: 12)),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                    const X11DisplayView(),
-                  ],
-                ),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        return Listener(
+                          onPointerMove: (e) => _handlePointerMove(e, constraints),
+                          onPointerUp: (_) => _stopAutoScroll(),
+                          onPointerCancel: (_) => _stopAutoScroll(),
+                          child: Scrollbar(
+                            controller: session.terminalScrollController,
+                            child: TerminalView(
+                              session.terminal,
+                              controller: session.terminalController,
+                              scrollController: session.terminalScrollController,
+                              autofocus: true,
+                              backgroundOpacity: 1.0,
+                              textStyle: const TerminalStyle(
+                                fontSize: 13,
+                                fontFamily: 'monospace',
+                              ),
+                              autoResize: true,
+                              simulateScroll: false,
+                              readOnly: session.isInitializing,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                  _buildTerminalToolbar(),
+                ],
               ),
-              _buildTerminalToolbar(),
+              X11DisplayView(
+                onBackToTerminal: () {
+                  setState(() => _activeTabIndex = 0);
+                },
+              ),
             ],
           ),
         ),

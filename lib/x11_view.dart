@@ -3,10 +3,12 @@ import 'package:flutter/services.dart';
 
 class X11DisplayView extends StatefulWidget {
   final String socketName;
+  final VoidCallback? onBackToTerminal;
 
   const X11DisplayView({
     super.key,
     this.socketName = 'sobhan_x11_frame',
+    this.onBackToTerminal,
   });
 
   @override
@@ -21,6 +23,7 @@ class _X11DisplayViewState extends State<X11DisplayView> {
   int _height = 0;
   bool _isLoading = true;
   String? _errorMessage;
+  final FocusNode _focusNode = FocusNode();
 
   @override
   void initState() {
@@ -88,8 +91,18 @@ class _X11DisplayViewState extends State<X11DisplayView> {
     });
   }
 
+  void _toggleKeyboard() {
+    if (_focusNode.hasFocus) {
+      _focusNode.unfocus();
+    } else {
+      FocusScope.of(context).requestFocus(_focusNode);
+      SystemChannels.textInput.invokeMethod('TextInput.show');
+    }
+  }
+
   @override
   void dispose() {
+    _focusNode.dispose();
     _stopDisplay();
     super.dispose();
   }
@@ -139,6 +152,14 @@ class _X11DisplayViewState extends State<X11DisplayView> {
                 icon: const Icon(Icons.refresh, color: Colors.white),
                 label: const Text('تلاش مجدد', style: TextStyle(color: Colors.white)),
               ),
+              if (widget.onBackToTerminal != null) ...[
+                const SizedBox(height: 10),
+                TextButton.icon(
+                  onPressed: widget.onBackToTerminal,
+                  icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                  label: const Text('بازگشت به ترمینال', style: TextStyle(color: Colors.white70)),
+                ),
+              ],
             ],
           ),
         ),
@@ -146,26 +167,81 @@ class _X11DisplayViewState extends State<X11DisplayView> {
     }
 
     if (_textureId != null) {
-      return Container(
-        color: Colors.black,
-        child: Center(
-          child: AspectRatio(
-            aspectRatio: (_width > 0 && _height > 0) ? (_width / _height) : 16 / 9,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final renderSize = Size(constraints.maxWidth, constraints.maxHeight);
-                return Listener(
-                  behavior: HitTestBehavior.opaque,
-                  onPointerDown: (event) => _sendTouchEvent(0, event.localPosition, renderSize),
-                  onPointerMove: (event) => _sendTouchEvent(1, event.localPosition, renderSize),
-                  onPointerUp: (event) => _sendTouchEvent(2, event.localPosition, renderSize),
-                  onPointerCancel: (event) => _sendTouchEvent(2, event.localPosition, renderSize),
-                  child: Texture(textureId: _textureId!),
-                );
+      return Stack(
+        children: [
+          // فیلد مخفی برای پذیرش رویدادهای کیبورد و فعال کردن کیبورد نرم‌افزاری
+          Positioned(
+            left: -100,
+            top: -100,
+            width: 1,
+            height: 1,
+            child: TextField(
+              focusNode: _focusNode,
+              autocorrect: false,
+              enableSuggestions: false,
+              onChanged: (text) {
+                // ارسال مستقیم متن به متد چنل در صورت نیاز
               },
             ),
           ),
-        ),
+          // نمایشگر اصلی X11
+          Positioned.fill(
+            child: Container(
+              color: Colors.black,
+              child: Center(
+                child: FittedBox(
+                  fit: BoxFit.contain,
+                  child: SizedBox(
+                    width: _width > 0 ? _width.toDouble() : 1280,
+                    height: _height > 0 ? _height.toDouble() : 720,
+                    child: Listener(
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (event) => _sendTouchEvent(0, event.localPosition, Size(_width.toDouble(), _height.toDouble())),
+                      onPointerMove: (event) => _sendTouchEvent(1, event.localPosition, Size(_width.toDouble(), _height.toDouble())),
+                      onPointerUp: (event) => _sendTouchEvent(2, event.localPosition, Size(_width.toDouble(), _height.toDouble())),
+                      onPointerCancel: (event) => _sendTouchEvent(2, event.localPosition, Size(_width.toDouble(), _height.toDouble())),
+                      child: Texture(textureId: _textureId!),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // نوار کنترل شناور و شیشه‌ای بالای صفحه (بدون اشغال فضای دسکتاپ)
+          Positioned(
+            top: 10,
+            right: 10,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.black.withAlpha(160),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white24, width: 0.8),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.keyboard, color: Colors.white, size: 20),
+                    tooltip: 'کیبورد',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    onPressed: _toggleKeyboard,
+                  ),
+                  const SizedBox(width: 4),
+                  if (widget.onBackToTerminal != null)
+                    IconButton(
+                      icon: const Icon(Icons.terminal, color: Colors.greenAccent, size: 20),
+                      tooltip: 'بازگشت به ترمینال',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                      onPressed: widget.onBackToTerminal,
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ],
       );
     }
 
