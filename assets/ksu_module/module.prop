@@ -1,0 +1,6 @@
+id=sobhan_terminal_boot
+name=Sobhan Terminal Auto-Boot Service
+version=v1.0
+versionCode=1
+author=Sobhan
+description=Prepares mounts, network, and background services for Sobhan Terminal Ubuntu chroot on system boot.
