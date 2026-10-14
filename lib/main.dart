@@ -23,7 +23,7 @@ class TerminalTaskHandler extends TaskHandler {
   void onRepeatEvent(DateTime timestamp) {}
 
   @override
-  Future<FutureOr<void>> onDestroy(DateTime timestamp) async {}
+  Future<void> onDestroy(DateTime timestamp, bool isStopping) async {}
 }
 
 class TerminalSessionManager {
