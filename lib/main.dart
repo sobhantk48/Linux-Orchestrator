@@ -23,7 +23,7 @@ class TerminalTaskHandler extends TaskHandler {
   void onRepeatEvent(DateTime timestamp) {}
 
   @override
-  Future<void> onDestroy(DateTime timestamp, bool isStopped) async {}
+  Future<FutureOr<void>> onDestroy(DateTime timestamp) async {}
 }
 
 class TerminalSessionManager {
@@ -240,6 +240,41 @@ rm -f $tempPath/frame_server $tempPath/touch_server
     }
   }
 
+  Future<void> _extractDesktopBundle(String tempPath) async {
+    try {
+      final checkDesktop = await Process.run('su', [
+        '-c',
+        '[ -f /data/ubuntu/usr/bin/startxfce4 ] && echo "INSTALLED" || echo "NOT_INSTALLED"',
+      ]);
+
+      if (checkDesktop.stdout.toString().trim() == 'INSTALLED') {
+        return;
+      }
+
+      session.log('[*] Extracting desktop bundle from assets...');
+      final byteData = await rootBundle.load('assets/desktop_bundle.tar.gz');
+      final tempBundlePath = '$tempPath/desktop_bundle.tar.gz';
+      await File(tempBundlePath).writeAsBytes(
+        byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
+        flush: true,
+      );
+
+      session.log('[*] Installing desktop bundle into /data/ubuntu...');
+      final installBundleScript = '''
+tar -xzf "$tempBundlePath" -C /data/ubuntu/
+rm -f "$tempBundlePath"
+''';
+      final res = await Process.run('su', ['-c', installBundleScript]);
+      if (res.exitCode == 0) {
+        session.log('\x1B[1;32m[+] Desktop bundle extracted successfully.\x1B[0m');
+      } else {
+        session.log('\x1B[1;31m[-] Error extracting desktop bundle: ${res.stderr}\x1B[0m');
+      }
+    } catch (e) {
+      session.log('\x1B[1;33m[!] Desktop bundle asset not found or skipped: $e\x1B[0m');
+    }
+  }
+
   Future<void> _setupAndStartSession() async {
     setState(() {
       session.isInitializing = true;
@@ -296,6 +331,7 @@ chmod 755 /data/ubuntu
       }
 
       await _extractServerBinaries(tempDir.path);
+      await _extractDesktopBundle(tempDir.path);
 
       session.log('[*] Preparing launcher and network config...');
       const launcherScript = r'''
