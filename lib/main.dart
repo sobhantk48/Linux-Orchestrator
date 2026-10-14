@@ -215,7 +215,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
     try {
       final binaries = ['frame_server', 'touch_server'];
       for (final bin in binaries) {
-        final byteData = await rootBundle.load('assets/bin/$bin');
+        final byteData = await rootBundle.load('assets/x11_bridge/$bin');
         final targetFile = File('$tempPath/$bin');
         await targetFile.writeAsBytes(
           byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),

@@ -1,154 +1,126 @@
 import 'dart:async';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class X11View extends StatefulWidget {
-  final VoidCallback onBackToTerminal;
+  final VoidCallback? onBackToTerminal;
 
-  const X11View({super.key, required this.onBackToTerminal});
+  const X11View({super.key, this.onBackToTerminal});
 
   @override
   State<X11View> createState() => _X11ViewState();
 }
 
 class _X11ViewState extends State<X11View> {
-  static const MethodChannel _channel = MethodChannel('com.sobhan.term/x11_display');
-  final FocusNode _focusNode = FocusNode();
-  final TextEditingController _textController = TextEditingController();
-  bool _isConnected = false;
+  static const _method = MethodChannel('com.sobhan.term/x11_display');
+  static const _frames = EventChannel('com.sobhan.term/x11_frames');
+
+  StreamSubscription<dynamic>? _sub;
+  ui.Image? _frame;
+  int _w = 0;
+  int _h = 0;
+  bool _decoding = false;
 
   @override
   void initState() {
     super.initState();
-    _connect();
+    _connectTouch();
+    _listenFrames();
   }
 
-  Future<void> _connect() async {
+  Future<void> _connectTouch() async {
     try {
-      final res = await _channel.invokeMethod('connectTouch');
-      if (res == true && mounted) {
-        setState(() {
-          _isConnected = true;
-        });
-      }
-    } catch (_) {}
-  }
-
-  void _sendKey(int keysym) {
-    if (!_isConnected) return;
-    _channel.invokeMethod('sendKeyEvent', {'type': 3, 'keysym': keysym});
-    Future.delayed(const Duration(milliseconds: 30), () {
-      _channel.invokeMethod('sendKeyEvent', {'type': 4, 'keysym': keysym});
-    });
-  }
-
-  void _handleTextInput(String text) {
-    if (text.isEmpty) return;
-    for (int i = 0; i < text.length; i++) {
-      int code = text.codeUnitAt(i);
-      _sendKey(code);
+      await _method.invokeMethod<bool>('connectTouch');
+    } catch (e) {
+      debugPrint('[X11View] touch socket: $e');
     }
-    _textController.clear();
   }
 
-  void _sendTouchEvent(int type, Offset pos, Size size) {
-    if (!_isConnected) return;
-    int targetW = 2400;
-    int targetH = 1080;
-    int x = ((pos.dx / size.width) * targetW).clamp(0, targetW).toInt();
-    int y = ((pos.dy / size.height) * targetH).clamp(0, targetH).toInt();
-
-    _channel.invokeMethod('sendTouchEvent', {'type': type, 'x': x, 'y': y});
+  void _listenFrames() {
+    _sub = _frames.receiveBroadcastStream().listen(
+      (data) {
+        if (_decoding) return;
+        final map   = Map<String, dynamic>.from(data as Map);
+        final w     = map['width']  as int;
+        final h     = map['height'] as int;
+        final bytes = map['bytes']  as Uint8List;
+        _decoding = true;
+        ui.decodeImageFromPixels(bytes, w, h, ui.PixelFormat.rgba8888, (img) {
+          if (!mounted) { img.dispose(); return; }
+          setState(() {
+            _frame?.dispose();
+            _frame = img;
+            _w = w;
+            _h = h;
+          });
+          _decoding = false;
+        });
+      },
+      onError: (e) => debugPrint('[X11View] frame stream: $e'),
+    );
   }
 
   @override
   void dispose() {
-    _channel.invokeMethod('disconnectTouch');
-    _focusNode.dispose();
-    _textController.dispose();
+    _sub?.cancel();
+    _method.invokeMethod<bool>('disconnectTouch');
+    _frame?.dispose();
     super.dispose();
+  }
+
+  void _sendTouch(int type, Offset pos) {
+    _method.invokeMethod<bool>('sendTouchEvent', {
+      'type': type,
+      'x': pos.dx.toInt(),
+      'y': pos.dy.toInt(),
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final screenSize = MediaQuery.of(context).size;
-
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onPanDown: (details) {
-              _sendTouchEvent(0, details.localPosition, screenSize);
-              _sendTouchEvent(1, details.localPosition, screenSize);
-            },
-            onPanUpdate: (details) {
-              _sendTouchEvent(0, details.localPosition, screenSize);
-            },
-            onPanEnd: (_) {
-              _channel.invokeMethod('sendTouchEvent', {'type': 2, 'x': 0, 'y': 0});
-            },
-            onPanCancel: () {
-              _channel.invokeMethod('sendTouchEvent', {'type': 2, 'x': 0, 'y': 0});
-            },
-            child: const SizedBox.expand(),
-          ),
-          Positioned(
-            left: -100,
-            top: -100,
-            width: 1,
-            height: 1,
-            child: KeyboardListener(
-              focusNode: _focusNode,
-              onKeyEvent: (event) {
-                if (event is KeyDownEvent) {
-                  if (event.logicalKey == LogicalKeyboardKey.backspace) {
-                    _sendKey(0xff08);
-                  } else if (event.logicalKey == LogicalKeyboardKey.enter) {
-                    _sendKey(0xff0d);
-                  } else if (event.logicalKey == LogicalKeyboardKey.tab) {
-                    _sendKey(0xff09);
-                  } else if (event.logicalKey == LogicalKeyboardKey.escape) {
-                    _sendKey(0xff1b);
-                  }
-                }
-              },
-              child: TextField(
-                controller: _textController,
-                autofocus: false,
-                onChanged: _handleTextInput,
-                decoration: const InputDecoration(border: InputBorder.none),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown:   (d) => _sendTouch(0, d.localPosition),
+      onTapUp:     (d) => _sendTouch(1, d.localPosition),
+      onPanUpdate: (d) => _sendTouch(2, d.localPosition),
+      child: _frame == null
+          ? const ColoredBox(
+              color: Colors.black,
+              child: Center(
+                child: CircularProgressIndicator(color: Colors.white54),
               ),
-            ),
-          ),
-          Positioned(
-            right: 16,
-            bottom: 16,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                FloatingActionButton.small(
-                  heroTag: 'kbd_toggle',
-                  backgroundColor: Colors.blueGrey.shade800,
-                  onPressed: () {
-                    FocusScope.of(context).requestFocus(_focusNode);
-                    SystemChannels.textInput.invokeMethod('TextInput.show');
-                  },
-                  child: const Icon(Icons.keyboard, color: Colors.white),
-                ),
-                const SizedBox(width: 8),
-                FloatingActionButton.small(
-                  heroTag: 'back_term',
-                  backgroundColor: Colors.blueGrey.shade800,
-                  onPressed: widget.onBackToTerminal,
-                  child: const Icon(Icons.terminal, color: Colors.white),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+            )
+          : LayoutBuilder(builder: (ctx, constraints) {
+              return CustomPaint(
+                size: constraints.biggest,
+                painter: _FramePainter(_frame!, _w, _h),
+              );
+            }),
     );
   }
+}
+
+class _FramePainter extends CustomPainter {
+  final ui.Image image;
+  final int srcW;
+  final int srcH;
+
+  _FramePainter(this.image, this.srcW, this.srcH);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final src = Rect.fromLTWH(0, 0, srcW.toDouble(), srcH.toDouble());
+    final dst = Rect.fromLTWH(0, 0, size.width, size.height);
+    canvas.drawImageRect(
+      image,
+      src,
+      dst,
+      Paint()..filterQuality = FilterQuality.low,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_FramePainter old) => old.image != image;
 }
