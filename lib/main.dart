@@ -252,7 +252,7 @@ rm -f $tempPath/frame_server $tempPath/touch_server
       }
 
       session.log('[*] Extracting desktop bundle from assets...');
-      final byteData = await rootBundle.load('assets/desktop_bundle.tar.gz');
+      final byteData = await rootBundle.load('assets/packages/desktop_bundle.tar.gz');
       final tempBundlePath = '$tempPath/desktop_bundle.tar.gz';
       await File(tempBundlePath).writeAsBytes(
         byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
