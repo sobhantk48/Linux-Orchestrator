@@ -113,10 +113,10 @@ class TerminalSessionManager {
   }
 
   void pasteText(String text) {
-    final safeText = text.replaceAll(RegExp(r'[\r\n\x00-\x1F\x7F]+'), ' ').trim();
-    if (safeText.isNotEmpty) {
-      pty?.write(Uint8List.fromList(utf8.encode(safeText)));
-    }
+    if (text.isEmpty) return;
+    final normalized = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+    final bracketed = '\x1b[200~$normalized\x1b[201~';
+    pty?.write(Uint8List.fromList(utf8.encode(bracketed)));
   }
 }
 
