@@ -7,7 +7,9 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:xterm/xterm.dart';
+import 'rtl_terminal.dart';
+import 'term_buffer.dart';
+import 'vt_parser.dart';
 
 @pragma('vm:entry-point')
 void startCallback() {
@@ -25,50 +27,66 @@ class TerminalTaskHandler extends TaskHandler {
   Future<void> onDestroy(DateTime timestamp) async {}
 }
 
-const pureBlackTerminalTheme = TerminalTheme(
-  cursor: Color(0xFF00FF66),
-  selection: Color(0x5500FF66),
-  foreground: Color(0xFFEEEEEE),
-  background: Color(0xFF000000),
-  black: Color(0xFF000000),
-  red: Color(0xFFFF5252),
-  green: Color(0xFF00E676),
-  yellow: Color(0xFFFFEA00),
-  blue: Color(0xFF40C4FF),
-  magenta: Color(0xFFE040FB),
-  cyan: Color(0xFF18FFFF),
-  white: Color(0xFFFFFFFF),
-  brightBlack: Color(0xFF555555),
-  brightRed: Color(0xFFFF8A80),
-  brightGreen: Color(0xFFB9F6CA),
-  brightYellow: Color(0xFFFFFF8D),
-  brightBlue: Color(0xFF80D8FF),
-  brightMagenta: Color(0xFFFF80AB),
-  brightCyan: Color(0xFFA7FFEB),
-  brightWhite: Color(0xFFFFFFFF),
-  searchHitBackground: Color(0xFFFFEA00),
-  searchHitBackgroundCurrent: Color(0xFFFF9100),
-  searchHitForeground: Color(0xFF000000),
-);
+// ---------------------------------------------------------------------------
+// Session manager: PTY -> UTF-8 stream -> VT parser -> cell buffer -> renderer
+// ---------------------------------------------------------------------------
 
 class TerminalSessionManager {
   static final TerminalSessionManager _instance = TerminalSessionManager._internal();
   factory TerminalSessionManager() => _instance;
   TerminalSessionManager._internal();
 
-  final Terminal terminal = Terminal(maxLines: 10000);
-  final TerminalController terminalController = TerminalController();
-  final ScrollController terminalScrollController = ScrollController();
-  
+  /// The single source of truth for screen content.
+  final TermBuffer buffer = TermBuffer(cols: 120, rows: 35, maxScrollback: 2000);
+
+  /// Bumped on every repaint so the widget rebuilds.
+  final ValueNotifier<int> lineUpdateNotifier = ValueNotifier<int>(0);
+
+  final ValueNotifier<String> terminalTitle = ValueNotifier<String>('');
+
   Pty? pty;
+  StreamSubscription<String>? _outputSub;
+
   bool isSessionStarted = false;
   bool isInitializing = false;
   bool rootError = false;
   bool isServiceRunning = false;
 
-  void log(String message) {
-    terminal.write('$message\r\n');
+  int _cols = 120;
+  int _rows = 35;
+  int _wantCols = 0;
+  int _wantRows = 0;
+  Timer? _resizeDebounce;
+
+  // ---- chunk batching: one repaint per microtask, not per PTY read --------
+  final List<String> _pending = <String>[];
+  bool _flushQueued = false;
+
+  late final VtParser _parser = VtParser(
+    onPrint: (cp) => buffer.print(cp),
+    onExecute: (cp) => buffer.execute(cp),
+    onCsi: _onCsi,
+    onEsc: (b, i) => buffer.esc(b, i),
+    onOsc: _onOsc,
+  );
+
+  // ---------------------------------------------------------------- logging
+
+  void log(String message) => appendOutput('$message\r\n');
+
+  /// Everything — PTY output and internal log lines — goes through the parser.
+  void appendOutput(String data) {
+    if (data.isEmpty) return;
+    _parser.write(data);
+    _bump();
   }
+
+  void _bump() {
+    _linesCache = null;
+    lineUpdateNotifier.value++;
+  }
+
+  // ------------------------------------------------------------ PTY plumbing
 
   void startPtySession({required VoidCallback onExit}) {
     if (isSessionStarted && pty != null) return;
@@ -76,8 +94,8 @@ class TerminalSessionManager {
     pty = Pty.start(
       'su',
       arguments: ['-c', 'exec /system/bin/sh /data/ubuntu-login.sh'],
-      columns: 80,
-      rows: 25,
+      columns: _cols,
+      rows: _rows,
       environment: {
         'TERM': 'xterm-256color',
         'PATH': '/sbin:/system/sbin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin',
@@ -86,39 +104,196 @@ class TerminalSessionManager {
 
     isSessionStarted = true;
 
-    pty!.output
+    // UTF-8 decoding MUST happen on the stream, never per-chunk, otherwise
+    // multi-byte Persian letters get shredded at chunk boundaries.
+    _outputSub?.cancel();
+    _outputSub = pty!.output
         .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
-        .listen((data) {
-      terminal.write(data);
+        .listen(_onText, onError: (Object e) {
+      log('\x1b[31m[-]\x1b[0m PTY read error: $e');
     });
-
-    terminal.onOutput = (data) {
-      pty?.write(Uint8List.fromList(utf8.encode(data)));
-    };
-
-    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      pty?.resize(height, width);
-    };
 
     pty!.exitCode.then((code) {
       isSessionStarted = false;
+      _outputSub?.cancel();
+      _outputSub = null;
       pty = null;
       onExit();
     });
   }
 
-  void sendKey(List<int> bytes) {
-    pty?.write(Uint8List.fromList(bytes));
+  void _onText(String s) {
+    _pending.add(s);
+    if (_flushQueued) return;
+    _flushQueued = true;
+    scheduleMicrotask(_flushPending);
+  }
+
+  void _flushPending() {
+    _flushQueued = false;
+    if (_pending.isEmpty) return;
+    final sb = StringBuffer();
+    for (final p in _pending) {
+      sb.write(p);
+    }
+    _pending.clear();
+    _parser.write(sb.toString());
+    _bump();
+  }
+
+  void _writeRaw(String s) {
+    final p = pty;
+    if (p == null) return;
+    p.write(Uint8List.fromList(utf8.encode(s)));
+  }
+
+  void sendInput(String text) {
+    if (pty != null && text.isNotEmpty) _writeRaw(text);
   }
 
   void pasteText(String text) {
-    if (text.isEmpty) return;
+    if (text.isEmpty || pty == null) return;
     final normalized = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
-    final bracketed = '\x1b[200~$normalized\x1b[201~';
-    pty?.write(Uint8List.fromList(utf8.encode(bracketed)));
+    _writeRaw('\x1b[200~$normalized\x1b[201~');
+  }
+
+  // ------------------------------------------------------- CSI interception
+
+  void _onCsi(CsiSeq s) {
+    // DSR 6n: cursor position report. Programs like `nano`, `vim`, `readline`
+    // will hang or misdraw forever if this is never answered.
+    if (s.finalByte == 0x6E && s.privateMarker == 0 && s.p(0) == 6) {
+      _writeRaw('\x1b[${buffer.cursorRow + 1};${buffer.cursorCol + 1}R');
+      return;
+    }
+    // DA: device attributes.
+    if (s.finalByte == 0x63 && s.privateMarker == 0) {
+      _writeRaw('\x1b[?1;2c');
+      return;
+    }
+    buffer.csi(s);
+  }
+
+  void _onOsc(String data) {
+    if (data.startsWith('0;') || data.startsWith('2;')) {
+      terminalTitle.value = data.substring(2);
+    }
+  }
+
+  // --------------------------------------------------------------- resizing
+
+  /// Called by the UI with the grid size it can actually display.
+  /// Debounced, change-driven, and never derived from rendered text.
+  void requestGrid(int cols, int rows) {
+    if (cols < 20 || rows < 5) return;
+    if (cols == _wantCols && rows == _wantRows) return;
+    _wantCols = cols;
+    _wantRows = rows;
+    _resizeDebounce?.cancel();
+    _resizeDebounce = Timer(const Duration(milliseconds: 200), () {
+      if (cols == _cols && rows == _rows) return;
+      _cols = cols;
+      _rows = rows;
+      buffer.resize(cols, rows);
+      try {
+        // flutter_pty signature: resize(rows, columns)
+        pty?.resize(rows, cols);
+      } catch (_) {}
+      _bump();
+    });
+  }
+
+  void disposeSession() {
+    _resizeDebounce?.cancel();
+    _outputSub?.cancel();
+    _outputSub = null;
+  }
+
+  // ------------------------------------------------- lines for the renderer
+
+  List<String>? _linesCache;
+
+  /// Scrollback + viewport, each line re-serialized with ANSI SGR so the
+  /// existing renderer keeps its per-run colours.
+  List<String> get lines {
+    final cached = _linesCache;
+    if (cached != null) return cached;
+    final out = <String>[];
+    for (final l in buffer.scrollback) {
+      out.add(_ansiOfLine(l));
+    }
+    for (var r = 0; r < buffer.rows; r++) {
+      out.add(_ansiOfLine(buffer.lines[r]));
+    }
+    _linesCache = out;
+    return out;
+  }
+
+  int get cursorRow => buffer.scrollback.length + buffer.cursorRow;
+  int get cursorCol => buffer.cursorCol;
+
+  String _ansiOfLine(TermLine line) {
+    // Trim trailing untouched blanks so we don't ship 120 spaces per line.
+    var end = line.cells.length;
+    while (end > 0) {
+      final c = line.cells[end - 1];
+      if (c.width != 0 && c.isBlank && c.attr.isPlain) {
+        end--;
+      } else {
+        break;
+      }
+    }
+    if (end == 0) return '';
+
+    final sb = StringBuffer();
+    TermAttr? cur;
+    for (var i = 0; i < end; i++) {
+      final cell = line.cells[i];
+      if (cell.width == 0) {
+        sb.write(' '); // نیمه‌ی راست کاراکتر پهن: یک ستون فضا نگه دار
+        continue;
+      }
+      if (cell.attr != cur) {
+        cur = cell.attr;
+        sb.write(_sgrFor(cur));
+      }
+      sb.write(cell.ch.isEmpty ? ' ' : cell.ch);
+    }
+    if (cur != null && !cur.isPlain) sb.write('\x1b[0m');
+    return sb.toString();
+  }
+
+  String _sgrFor(TermAttr a) {
+    final b = StringBuffer('\x1b[0');
+    if (a.bold) b.write(';1');
+    if (a.dim) b.write(';2');
+    if (a.italic) b.write(';3');
+    if (a.underline) b.write(';4');
+    if (a.inverse) b.write(';7');
+    if (a.hidden) b.write(';8');
+    if (a.strike) b.write(';9');
+    b.write(_colorCode(a.fg, true));
+    b.write(_colorCode(a.bg, false));
+    b.write('m');
+    return b.toString();
+  }
+
+  String _colorCode(int c, bool fg) {
+    if (c == kDefaultColor) return '';
+    if (isRgbColor(c)) {
+      final r = (c >> 16) & 0xFF;
+      final g = (c >> 8) & 0xFF;
+      final b = c & 0xFF;
+      return ';${fg ? 38 : 48};2;$r;$g;$b';
+    }
+    if (c < 8) return ';${(fg ? 30 : 40) + c}';
+    if (c < 16) return ';${(fg ? 90 : 100) + c - 8}';
+    return ';${fg ? 38 : 48};5;$c';
   }
 }
+
+// ---------------------------------------------------------------------------
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -154,19 +329,41 @@ class TerminalScreen extends StatefulWidget {
 }
 
 class _TerminalScreenState extends State<TerminalScreen> {
+  static const double _fontSize = 13;
+
+  // یک تم واحد؛ هم اندازه‌گیری سلول و هم رندر از همین می‌خونن
+  static const RtlTerminalTheme _theme = RtlTerminalTheme(
+    background: Colors.black,
+    foreground: Color(0xFFEEEEEE),
+    cursor: Color(0xFF00FF66),
+    fontSize: _fontSize,
+    fontFamily: 'monospace',
+    lineHeight: 1.2,
+  );
+
   final session = TerminalSessionManager();
-  Timer? _autoScrollTimer;
-  bool _hasSelection = false;
+  final FocusNode _terminalFocusNode = FocusNode();
+
+  double _cellW = 7.8;
+  double _cellH = 17.0;
+  bool _measured = false;
 
   @override
   void initState() {
     super.initState();
-    session.terminalController.addListener(_onSelectionChanged);
-
     _initForegroundTask();
     if (!session.isSessionStarted) {
       _setupAndStartSession();
     }
+  }
+
+  /// Measure ONE character once. Never derive cell size from output text,
+  /// otherwise cols changes -> SIGWINCH -> shell redraws -> cols changes...
+  void _measureCells() {
+    final m = measureCellMetrics(_theme);
+    _cellW = m.width;
+    _cellH = m.height;
+    _measured = true;
   }
 
   void _initForegroundTask() {
@@ -228,15 +425,6 @@ class _TerminalScreenState extends State<TerminalScreen> {
     }
   }
 
-  void _onSelectionChanged() {
-    final hasSel = session.terminalController.selection != null;
-    if (hasSel != _hasSelection) {
-      setState(() {
-        _hasSelection = hasSel;
-      });
-    }
-  }
-
   Future<void> _setupAndStartSession() async {
     setState(() {
       session.isInitializing = true;
@@ -244,7 +432,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
     });
 
     try {
-      session.log('\x1B[1;36m[+] Initializing Sobhan Terminal...\x1B[0m');
+      session.log('\x1b[32m[+]\x1b[0m Initializing Sobhan Terminal...');
 
       if (await Permission.manageExternalStorage.isDenied) {
         await Permission.manageExternalStorage.request();
@@ -268,11 +456,11 @@ class _TerminalScreenState extends State<TerminalScreen> {
       final tempDir = await getTemporaryDirectory();
 
       if (!exists) {
-        session.log('\x1B[1;33m[*] Ubuntu RootFS not found. Installing from assets...\x1B[0m');
+        session.log('\x1b[33m[*]\x1b[0m Ubuntu RootFS not found. Installing from assets...');
 
         final tempTarPath = '${tempDir.path}/ubuntu-base-arm64.tar.gz';
 
-        session.log('[*] Extracting package from APK...');
+        session.log('\x1b[33m[*]\x1b[0m Extracting package from APK...');
         final byteData = await rootBundle.load('assets/rootfs/ubuntu-base-arm64.tar.gz');
         final buffer = byteData.buffer;
         await File(tempTarPath).writeAsBytes(
@@ -280,7 +468,7 @@ class _TerminalScreenState extends State<TerminalScreen> {
           flush: true,
         );
 
-        session.log('[*] Unpacking RootFS into /data/ubuntu (please wait)...');
+        session.log('\x1b[33m[*]\x1b[0m Unpacking RootFS into /data/ubuntu (please wait)...');
         final installScript = '''
 mkdir -p /data/ubuntu
 tar -xzf "$tempTarPath" -C /data/ubuntu/
@@ -290,13 +478,13 @@ chmod 755 /data/ubuntu
 
         final installProcess = await Process.run('su', ['-c', installScript]);
         if (installProcess.exitCode != 0) {
-          session.log('\x1B[1;31m[-] Installation failed: ${installProcess.stderr}\x1B[0m');
+          session.log('\x1b[31m[-]\x1b[0m Installation failed: ${installProcess.stderr}');
           return;
         }
-        session.log('\x1B[1;32m[+] Ubuntu RootFS installed successfully!\x1B[0m');
+        session.log('\x1b[32m[+]\x1b[0m Ubuntu RootFS installed successfully!');
       }
 
-      session.log('[*] Checking core utilities & system configuration...');
+      session.log('\x1b[33m[*]\x1b[0m Checking core utilities & system configuration...');
 
       const initSystemScript = r'''
 UBUNTU_DIR="/data/ubuntu"
@@ -339,7 +527,7 @@ ln -sfn /sdcard $UBUNTU_DIR/home/sobhan/sdcard 2>/dev/null
 
 cat << 'BASHRC_EOF' > $UBUNTU_DIR/home/sobhan/.bashrc
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
-export PS1='\[\033[01;32m\]\u\[\033[00m\]@\[\033[01;35m\]localhost\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+export PS1='\[\033[01;32m\]sobhan\[\033[00m\]@\[\033[01;35m\]localhost\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
 alias ls='ls --color=auto'
 alias ll='ls -alF --color=auto'
 BASHRC_EOF
@@ -407,7 +595,7 @@ chmod 755 /data/ubuntu-login.sh
 
       await Process.run('su', ['-c', initSystemScript]);
 
-      session.log('\x1B[1;32m[+] Starting terminal session...\x1B[0m\r\n');
+      session.log('\x1b[32m[+]\x1b[0m Starting terminal session...\r\n');
       session.startPtySession(onExit: () {
         _stopForegroundService();
         if (mounted) {
@@ -416,7 +604,7 @@ chmod 755 /data/ubuntu-login.sh
       });
       await _startForegroundService();
     } catch (e) {
-      session.log('\x1B[1;31m[-] Root access required: Please grant Superuser access to Sobhan Terminal in KernelSU/Magisk!\x1B[0m');
+      session.log('\x1b[31m[-]\x1b[0m Root access required: Please grant Superuser access to Sobhan Terminal in KernelSU/Magisk!');
       if (mounted) {
         setState(() {
           session.rootError = true;
@@ -463,34 +651,17 @@ chmod 755 /data/ubuntu-login.sh
     );
   }
 
-  Future<void> _copyText() async {
-    final selection = session.terminalController.selection;
-    String? text;
-
-    if (selection != null) {
-      try {
-        text = session.terminal.buffer.getText(selection);
-      } catch (_) {}
-    }
-
-    if (text != null && text.isNotEmpty) {
-      await Clipboard.setData(ClipboardData(text: text));
-      session.terminalController.clearSelection();
+  Future<void> _copyAll() async {
+    final cleanRegex = RegExp(r'\x1B\[[0-9;]*[a-zA-Z]');
+    final fullText = session.lines.map((l) => l.replaceAll(cleanRegex, '')).join('\n');
+    if (fullText.isNotEmpty) {
+      await Clipboard.setData(ClipboardData(text: fullText));
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('کپی شد'),
+            content: Text('کل خروجی کپی شد'),
             duration: Duration(milliseconds: 600),
             backgroundColor: Color(0xFF1B5E20),
-          ),
-        );
-      }
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('متنی انتخاب نشده است'),
-            duration: Duration(milliseconds: 600),
           ),
         );
       }
@@ -504,37 +675,80 @@ chmod 755 /data/ubuntu-login.sh
     }
   }
 
-  void _handlePointerMove(PointerMoveEvent event, BoxConstraints constraints) {
-    final y = event.localPosition.dy;
-    const threshold = 50.0;
+  // ------------------------------------------------------------- keyboard
 
-    if (y < threshold) {
-      _startAutoScroll(-25.0);
-    } else if (y > constraints.maxHeight - threshold) {
-      _startAutoScroll(25.0);
-    } else {
-      _stopAutoScroll();
+  static final Map<LogicalKeyboardKey, String> _escapes = <LogicalKeyboardKey, String>{
+    LogicalKeyboardKey.arrowUp: '\x1b[A',
+    LogicalKeyboardKey.arrowDown: '\x1b[B',
+    LogicalKeyboardKey.arrowRight: '\x1b[C',
+    LogicalKeyboardKey.arrowLeft: '\x1b[D',
+    LogicalKeyboardKey.home: '\x1b[H',
+    LogicalKeyboardKey.end: '\x1b[F',
+    LogicalKeyboardKey.delete: '\x1b[3~',
+    LogicalKeyboardKey.insert: '\x1b[2~',
+    LogicalKeyboardKey.pageUp: '\x1b[5~',
+    LogicalKeyboardKey.pageDown: '\x1b[6~',
+    LogicalKeyboardKey.escape: '\x1b',
+    LogicalKeyboardKey.f1: '\x1bOP',
+    LogicalKeyboardKey.f2: '\x1bOQ',
+    LogicalKeyboardKey.f3: '\x1bOR',
+    LogicalKeyboardKey.f4: '\x1bOS',
+    LogicalKeyboardKey.f5: '\x1b[15~',
+    LogicalKeyboardKey.f6: '\x1b[17~',
+    LogicalKeyboardKey.f7: '\x1b[18~',
+    LogicalKeyboardKey.f8: '\x1b[19~',
+    LogicalKeyboardKey.f9: '\x1b[20~',
+    LogicalKeyboardKey.f10: '\x1b[21~',
+    LogicalKeyboardKey.f11: '\x1b[23~',
+    LogicalKeyboardKey.f12: '\x1b[24~',
+  };
+
+  KeyEventResult _handleKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
     }
-  }
 
-  void _startAutoScroll(double delta) {
-    if (_autoScrollTimer != null) return;
-    _autoScrollTimer = periodicAutoScroll(delta);
-  }
+    final key = event.logicalKey;
 
-  Timer periodicAutoScroll(double delta) {
-    return Timer.periodic(const Duration(milliseconds: 50), (_) {
-      if (session.terminalScrollController.hasClients) {
-        final current = session.terminalScrollController.offset;
-        final target = (current + delta).clamp(0.0, session.terminalScrollController.position.maxScrollExtent);
-        session.terminalScrollController.jumpTo(target);
+    if (key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+      session.sendInput('\r');
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.backspace) {
+      session.sendInput('\x7f');
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.tab) {
+      session.sendInput('\t');
+      return KeyEventResult.handled;
+    }
+
+    final seq = _escapes[key];
+    if (seq != null) {
+      session.sendInput(seq);
+      return KeyEventResult.handled;
+    }
+
+    final ch = event.character;
+    if (ch == null || ch.isEmpty) return KeyEventResult.ignored;
+
+    final hw = HardwareKeyboard.instance;
+    if (hw.isControlPressed && ch.length == 1) {
+      final code = ch.toLowerCase().codeUnitAt(0);
+      if (code >= 0x61 && code <= 0x7A) {
+        session.sendInput(String.fromCharCode(code - 0x60));
+        return KeyEventResult.handled;
       }
-    });
-  }
+      if (ch == ' ') {
+        session.sendInput('\x00');
+        return KeyEventResult.handled;
+      }
+    }
 
-  void _stopAutoScroll() {
-    _autoScrollTimer?.cancel();
-    _autoScrollTimer = null;
+    if (ch.codeUnitAt(0) < 0x20) return KeyEventResult.ignored;
+
+    session.sendInput(ch);
+    return KeyEventResult.handled;
   }
 
   Widget _buildMinimalToolbar() {
@@ -546,11 +760,11 @@ chmod 755 /data/ubuntu-login.sh
         children: [
           Expanded(
             child: Material(
-              color: _hasSelection ? const Color(0xFF1B5E20) : const Color(0xFF141414),
+              color: const Color(0xFF141414),
               borderRadius: BorderRadius.circular(4),
               child: InkWell(
                 borderRadius: BorderRadius.circular(4),
-                onTap: _copyText,
+                onTap: _copyAll,
                 child: const Center(
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -606,8 +820,8 @@ chmod 755 /data/ubuntu-login.sh
 
   @override
   void dispose() {
-    _stopAutoScroll();
-    session.terminalController.removeListener(_onSelectionChanged);
+    session.disposeSession();
+    _terminalFocusNode.dispose();
     super.dispose();
   }
 
@@ -650,29 +864,34 @@ chmod 755 /data/ubuntu-login.sh
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    return Listener(
-                      onPointerMove: (e) => _handlePointerMove(e, constraints),
-                      onPointerUp: (_) => _stopAutoScroll(),
-                      onPointerCancel: (_) => _stopAutoScroll(),
-                      child: Container(
-                        color: Colors.black,
-                        child: Scrollbar(
-                          controller: session.terminalScrollController,
-                          child: TerminalView(
-                            session.terminal,
-                            controller: session.terminalController,
-                            scrollController: session.terminalScrollController,
-                            theme: pureBlackTerminalTheme,
-                            autofocus: true,
-                            backgroundOpacity: 1.0,
-                            textStyle: const TerminalStyle(
-                              fontSize: 13,
-                              fontFamily: 'monospace',
-                            ),
-                            autoResize: true,
-                            simulateScroll: false,
-                            readOnly: session.isInitializing,
-                          ),
+                    if (!_measured) _measureCells();
+
+                    final cols = (constraints.maxWidth / _cellW).floor().clamp(20, 400).toInt();
+                    final rows = (constraints.maxHeight / _cellH).floor().clamp(5, 200).toInt();
+
+                    // Never mutate state during build.
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      session.requestGrid(cols, rows);
+                    });
+
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        _terminalFocusNode.requestFocus();
+                        SystemChannels.textInput.invokeMethod('TextInput.show');
+                      },
+                      child: Focus(
+                        focusNode: _terminalFocusNode,
+                        autofocus: true,
+                        onKeyEvent: _handleKey,
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: session.lineUpdateNotifier,
+                          builder: (context, _, __) {
+                            return RtlTerminalView(
+                              buffer: session.buffer,
+                              theme: _theme,
+                            );
+                          },
                         ),
                       ),
                     );
