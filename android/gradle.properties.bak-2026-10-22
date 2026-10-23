@@ -1,0 +1,19 @@
+org.gradle.jvmargs=-Xmx1024m -XX:MaxMetaspaceSize=256m -XX:-TieredCompilation
+org.gradle.parallel=false
+org.gradle.daemon=false
+org.gradle.workers.max=1
+android.useAndroidX=true
+android.enableJetifier=true
+android.suppressUnsupportedCompileSdk=34
+# This builtInKotlin flag was added automatically by Flutter migrator
+android.builtInKotlin=false
+# This newDsl flag was added automatically by Flutter migrator
+android.newDsl=false
+android.skipBuildDependencyValidation=true
+org.gradle.warning.mode=all
+
+android.aapt2FromMaven=false
+android.aapt2Override=/home/sobhan/Android/Sdk/build-tools/36.1.0/aapt2
+org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=1024m -XX:+HeapDumpOnOutOfMemoryError
+android.useAndroidX=true
+android.enableJetifier=false

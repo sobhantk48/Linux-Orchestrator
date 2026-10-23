@@ -4,7 +4,24 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias      = keystoreProperties['keyAlias']
+                keyPassword   = keystoreProperties['keyPassword']
+                storeFile     = file(keystoreProperties['storeFile'])
+                storePassword = keystoreProperties['storePassword']
+            }
+        }
+    }
+
     namespace = "com.sobhan.term.my_terminal"
     compileSdk = 35
     buildToolsVersion = "36.1.0"
@@ -34,7 +51,7 @@ android {
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+            signingConfig = keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
         }
     }
 }

@@ -8,7 +8,6 @@ import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:xterm/xterm.dart';
-import 'x11_view.dart';
 
 @pragma('vm:entry-point')
 void startCallback() {
@@ -23,8 +22,34 @@ class TerminalTaskHandler extends TaskHandler {
   void onRepeatEvent(DateTime timestamp) {}
 
   @override
-  Future<void> onDestroy(DateTime timestamp, bool isStopping) async {}
+  Future<void> onDestroy(DateTime timestamp) async {}
 }
+
+const pureBlackTerminalTheme = TerminalTheme(
+  cursor: Color(0xFF00FF66),
+  selection: Color(0x5500FF66),
+  foreground: Color(0xFFEEEEEE),
+  background: Color(0xFF000000),
+  black: Color(0xFF000000),
+  red: Color(0xFFFF5252),
+  green: Color(0xFF00E676),
+  yellow: Color(0xFFFFEA00),
+  blue: Color(0xFF40C4FF),
+  magenta: Color(0xFFE040FB),
+  cyan: Color(0xFF18FFFF),
+  white: Color(0xFFFFFFFF),
+  brightBlack: Color(0xFF555555),
+  brightRed: Color(0xFFFF8A80),
+  brightGreen: Color(0xFFB9F6CA),
+  brightYellow: Color(0xFFFFFF8D),
+  brightBlue: Color(0xFF80D8FF),
+  brightMagenta: Color(0xFFFF80AB),
+  brightCyan: Color(0xFFA7FFEB),
+  brightWhite: Color(0xFFFFFFFF),
+  searchHitBackground: Color(0xFFFFEA00),
+  searchHitBackgroundCurrent: Color(0xFFFF9100),
+  searchHitForeground: Color(0xFF000000),
+);
 
 class TerminalSessionManager {
   static final TerminalSessionManager _instance = TerminalSessionManager._internal();
@@ -88,7 +113,10 @@ class TerminalSessionManager {
   }
 
   void pasteText(String text) {
-    pty?.write(Uint8List.fromList(utf8.encode(text)));
+    final safeText = text.replaceAll(RegExp(r'[\r\n\x00-\x1F\x7F]+'), ' ').trim();
+    if (safeText.isNotEmpty) {
+      pty?.write(Uint8List.fromList(utf8.encode(safeText)));
+    }
   }
 }
 
@@ -106,10 +134,11 @@ class MyTerminalApp extends StatelessWidget {
       title: 'Sobhan Terminal',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF1E1E1E),
+        scaffoldBackgroundColor: Colors.black,
+        canvasColor: Colors.black,
         colorScheme: const ColorScheme.dark(
-          primary: Color(0xFF388E3C),
-          surface: Color(0xFF252526),
+          primary: Color(0xFF00E676),
+          surface: Colors.black,
         ),
       ),
       home: const TerminalScreen(),
@@ -127,10 +156,7 @@ class TerminalScreen extends StatefulWidget {
 class _TerminalScreenState extends State<TerminalScreen> {
   final session = TerminalSessionManager();
   Timer? _autoScrollTimer;
-  bool _ctrlPressed = false;
-  bool _altPressed = false;
   bool _hasSelection = false;
-  int _activeTabIndex = 0;
 
   @override
   void initState() {
@@ -211,70 +237,6 @@ class _TerminalScreenState extends State<TerminalScreen> {
     }
   }
 
-  Future<void> _extractServerBinaries(String tempPath) async {
-    try {
-      final binaries = ['frame_server', 'touch_server'];
-      for (final bin in binaries) {
-        final byteData = await rootBundle.load('assets/bin/$bin');
-        final targetFile = File('$tempPath/$bin');
-        await targetFile.writeAsBytes(
-          byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
-          flush: true,
-        );
-      }
-
-      await Process.run('su', [
-        '-c',
-        '''
-mkdir -p /data/ubuntu/usr/local/bin
-cp $tempPath/frame_server /data/ubuntu/usr/local/bin/frame_server
-cp $tempPath/touch_server /data/ubuntu/usr/local/bin/touch_server
-chmod 755 /data/ubuntu/usr/local/bin/frame_server
-chmod 755 /data/ubuntu/usr/local/bin/touch_server
-rm -f $tempPath/frame_server $tempPath/touch_server
-''',
-      ]);
-      session.log('\x1B[1;32m[+] X11 bridge binaries installed.\x1B[0m');
-    } catch (e) {
-      session.log('\x1B[1;33m[!] Warning extracting bridge binaries: $e\x1B[0m');
-    }
-  }
-
-  Future<void> _extractDesktopBundle(String tempPath) async {
-    try {
-      final checkDesktop = await Process.run('su', [
-        '-c',
-        '[ -f /data/ubuntu/usr/bin/startxfce4 ] && echo "INSTALLED" || echo "NOT_INSTALLED"',
-      ]);
-
-      if (checkDesktop.stdout.toString().trim() == 'INSTALLED') {
-        return;
-      }
-
-      session.log('[*] Extracting desktop bundle from assets...');
-      final byteData = await rootBundle.load('assets/packages/desktop_bundle.tar.gz');
-      final tempBundlePath = '$tempPath/desktop_bundle.tar.gz';
-      await File(tempBundlePath).writeAsBytes(
-        byteData.buffer.asUint8List(byteData.offsetInBytes, byteData.lengthInBytes),
-        flush: true,
-      );
-
-      session.log('[*] Installing desktop bundle into /data/ubuntu...');
-      final installBundleScript = '''
-tar -xzf "$tempBundlePath" -C /data/ubuntu/
-rm -f "$tempBundlePath"
-''';
-      final res = await Process.run('su', ['-c', installBundleScript]);
-      if (res.exitCode == 0) {
-        session.log('\x1B[1;32m[+] Desktop bundle extracted successfully.\x1B[0m');
-      } else {
-        session.log('\x1B[1;31m[-] Error extracting desktop bundle: ${res.stderr}\x1B[0m');
-      }
-    } catch (e) {
-      session.log('\x1B[1;33m[!] Desktop bundle asset not found or skipped: $e\x1B[0m');
-    }
-  }
-
   Future<void> _setupAndStartSession() async {
     setState(() {
       session.isInitializing = true;
@@ -284,6 +246,10 @@ rm -f "$tempBundlePath"
     try {
       session.log('\x1B[1;36m[+] Initializing Sobhan Terminal...\x1B[0m');
 
+      if (await Permission.manageExternalStorage.isDenied) {
+        await Permission.manageExternalStorage.request();
+      }
+
       ProcessResult checkBash;
       try {
         checkBash = await Process.run('su', [
@@ -291,7 +257,7 @@ rm -f "$tempBundlePath"
           '[ -f /data/ubuntu/bin/bash ] && echo "EXISTS" || echo "NOT_EXISTS"',
         ]);
       } catch (e) {
-        throw const ProcessException('su', ['-c', '...'], 'Root permission denied or su binary hidden by KernelSU.');
+        throw const ProcessException('su', ['-c', '...'], 'Root permission denied or su binary hidden.');
       }
 
       if (checkBash.exitCode != 0) {
@@ -330,11 +296,63 @@ chmod 755 /data/ubuntu
         session.log('\x1B[1;32m[+] Ubuntu RootFS installed successfully!\x1B[0m');
       }
 
-      await _extractServerBinaries(tempDir.path);
-      await _extractDesktopBundle(tempDir.path);
+      session.log('[*] Checking core utilities & system configuration...');
 
-      session.log('[*] Preparing launcher and network config...');
-      const launcherScript = r'''
+      const initSystemScript = r'''
+UBUNTU_DIR="/data/ubuntu"
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
+mountpoint -q $UBUNTU_DIR/dev || mount --bind /dev $UBUNTU_DIR/dev
+mountpoint -q $UBUNTU_DIR/dev/pts || mount -t devpts devpts $UBUNTU_DIR/dev/pts -o ptmxmode=0666,mode=620 2>/dev/null || mount --bind /dev/pts $UBUNTU_DIR/dev/pts
+mountpoint -q $UBUNTU_DIR/proc || mount -t proc proc $UBUNTU_DIR/proc
+mountpoint -q $UBUNTU_DIR/sys || mount -t sysfs sysfs $UBUNTU_DIR/sys
+
+rm -f $UBUNTU_DIR/etc/resolv.conf
+echo "nameserver 8.8.8.8" > $UBUNTU_DIR/etc/resolv.conf
+echo "nameserver 1.1.1.1" >> $UBUNTU_DIR/etc/resolv.conf
+
+grep -q "aid_inet" $UBUNTU_DIR/etc/group 2>/dev/null || echo "aid_inet:x:3003:root,sobhan" >> $UBUNTU_DIR/etc/group
+grep -q "aid_sdcard_rw" $UBUNTU_DIR/etc/group 2>/dev/null || echo "aid_sdcard_rw:x:1015:root,sobhan" >> $UBUNTU_DIR/etc/group
+grep -q "aid_media_rw" $UBUNTU_DIR/etc/group 2>/dev/null || echo "aid_media_rw:x:1023:root,sobhan" >> $UBUNTU_DIR/etc/group
+grep -q "aid_everybody" $UBUNTU_DIR/etc/group 2>/dev/null || echo "aid_everybody:x:9997:root,sobhan" >> $UBUNTU_DIR/etc/group
+
+if ! grep -q "^sobhan:" $UBUNTU_DIR/etc/passwd 2>/dev/null; then
+  chroot $UBUNTU_DIR /usr/sbin/useradd -m -u 1000 -s /bin/bash sobhan 2>/dev/null || chroot $UBUNTU_DIR /bin/useradd -m -u 1000 -s /bin/bash sobhan 2>/dev/null
+fi
+
+chroot $UBUNTU_DIR /bin/bash -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && usermod -aG aid_inet,aid_sdcard_rw,aid_media_rw,aid_everybody sobhan 2>/dev/null"
+
+if [ ! -f "$UBUNTU_DIR/usr/bin/sudo" ] || [ ! -f "$UBUNTU_DIR/usr/bin/curl" ]; then
+  chroot $UBUNTU_DIR /bin/bash -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && apt-get update && apt-get install -y --no-install-recommends sudo curl wget git nano ca-certificates net-tools"
+fi
+
+if [ -f "$UBUNTU_DIR/usr/bin/sudo" ]; then
+  chmod 4755 $UBUNTU_DIR/usr/bin/sudo 2>/dev/null
+  chroot $UBUNTU_DIR /bin/bash -c "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin && usermod -aG sudo sobhan 2>/dev/null"
+  mkdir -p $UBUNTU_DIR/etc/sudoers.d
+  echo "sobhan ALL=(ALL:ALL) NOPASSWD:ALL" > $UBUNTU_DIR/etc/sudoers.d/sobhan
+  chmod 0440 $UBUNTU_DIR/etc/sudoers.d/sobhan
+fi
+
+mkdir -p $UBUNTU_DIR/home/sobhan
+ln -sfn /sdcard $UBUNTU_DIR/home/sobhan/sdcard 2>/dev/null
+
+cat << 'BASHRC_EOF' > $UBUNTU_DIR/home/sobhan/.bashrc
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH
+export PS1='\[\033[01;32m\]\u\[\033[00m\]@\[\033[01;35m\]localhost\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+alias ls='ls --color=auto'
+alias ll='ls -alF --color=auto'
+BASHRC_EOF
+
+cat << 'PROFILE_EOF' > $UBUNTU_DIR/home/sobhan/.bash_profile
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+PROFILE_EOF
+
+cp $UBUNTU_DIR/home/sobhan/.bash_profile $UBUNTU_DIR/home/sobhan/.profile
+chown -R 1000:1000 $UBUNTU_DIR/home/sobhan 2>/dev/null
+
 cat << 'LAUNCHER_EOF' > /data/ubuntu-login.sh
 #!/system/bin/sh
 UBUNTU_DIR="/data/ubuntu"
@@ -342,8 +360,6 @@ UBUNTU_DIR="/data/ubuntu"
 cleanup() {
   echo ""
   echo "[*] Cleaning up mounts..."
-  pkill -f /usr/local/bin/frame_server 2>/dev/null
-  pkill -f /usr/local/bin/touch_server 2>/dev/null
   umount -l $UBUNTU_DIR/sdcard 2>/dev/null
   umount -l $UBUNTU_DIR/sys 2>/dev/null
   umount -l $UBUNTU_DIR/proc 2>/dev/null
@@ -363,8 +379,10 @@ mountpoint -q $UBUNTU_DIR/dev/pts || mount -t devpts devpts $UBUNTU_DIR/dev/pts 
 mountpoint -q $UBUNTU_DIR/proc || mount -t proc proc $UBUNTU_DIR/proc
 mountpoint -q $UBUNTU_DIR/sys || mount -t sysfs sysfs $UBUNTU_DIR/sys
 
-if [ -d /sdcard ]; then
-  mkdir -p $UBUNTU_DIR/sdcard
+mkdir -p $UBUNTU_DIR/sdcard
+if [ -d /storage/emulated/0 ]; then
+  mountpoint -q $UBUNTU_DIR/sdcard || mount --bind /storage/emulated/0 $UBUNTU_DIR/sdcard
+elif [ -d /sdcard ]; then
   mountpoint -q $UBUNTU_DIR/sdcard || mount --bind /sdcard $UBUNTU_DIR/sdcard
 fi
 
@@ -373,16 +391,6 @@ if [ ! -s $UBUNTU_DIR/etc/resolv.conf ]; then
   echo "nameserver 8.8.8.8" > $UBUNTU_DIR/etc/resolv.conf
   echo "nameserver 1.1.1.1" >> $UBUNTU_DIR/etc/resolv.conf
 fi
-
-if ! grep -q "127.0.0.1 localhost" $UBUNTU_DIR/etc/hosts 2>/dev/null; then
-  echo "127.0.0.1 localhost" >> $UBUNTU_DIR/etc/hosts
-fi
-
-if ! grep -q "aid_inet" $UBUNTU_DIR/etc/group 2>/dev/null; then
-  echo "aid_inet:x:3003:root,sobhan" >> $UBUNTU_DIR/etc/group
-fi
-
-chmod 4755 $UBUNTU_DIR/usr/bin/sudo 2>/dev/null
 
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export TERM=xterm-256color
@@ -397,7 +405,7 @@ LAUNCHER_EOF
 chmod 755 /data/ubuntu-login.sh
 ''';
 
-      await Process.run('su', ['-c', launcherScript]);
+      await Process.run('su', ['-c', initSystemScript]);
 
       session.log('\x1B[1;32m[+] Starting terminal session...\x1B[0m\r\n');
       session.startPtySession(onExit: () {
@@ -428,10 +436,10 @@ chmod 755 /data/ubuntu-login.sh
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF252526),
+        backgroundColor: const Color(0xFF111111),
         title: const Row(
           children: [
-            Icon(Icons.check_circle_outline, color: Color(0xFF388E3C)),
+            Icon(Icons.check_circle_outline, color: Color(0xFF00E676)),
             SizedBox(width: 8),
             Text('خروج از نشست', style: TextStyle(color: Colors.white, fontSize: 16)),
           ],
@@ -443,7 +451,7 @@ chmod 755 /data/ubuntu-login.sh
         actions: [
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF388E3C),
+              backgroundColor: const Color(0xFF1B5E20),
             ),
             onPressed: () {
               SystemNavigator.pop();
@@ -473,7 +481,7 @@ chmod 755 /data/ubuntu-login.sh
           const SnackBar(
             content: Text('کپی شد'),
             duration: Duration(milliseconds: 600),
-            backgroundColor: Color(0xFF388E3C),
+            backgroundColor: Color(0xFF1B5E20),
           ),
         );
       }
@@ -493,18 +501,6 @@ chmod 755 /data/ubuntu-login.sh
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     if (data != null && data.text != null && data.text!.isNotEmpty) {
       session.pasteText(data.text!);
-    }
-  }
-
-  void _scrollRelative(double delta) {
-    if (session.terminalScrollController.hasClients) {
-      final target = (session.terminalScrollController.offset + delta)
-          .clamp(0.0, session.terminalScrollController.position.maxScrollExtent);
-      session.terminalScrollController.animateTo(
-        target,
-        duration: const Duration(milliseconds: 100),
-        curve: Curves.easeOut,
-      );
     }
   }
 
@@ -541,93 +537,67 @@ chmod 755 /data/ubuntu-login.sh
     _autoScrollTimer = null;
   }
 
-  Widget _buildKeyButton(String label, {VoidCallback? onTap, bool isActive = false, Color? highlightColor, IconData? icon}) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2.5),
-      child: Material(
-        color: isActive 
-            ? (highlightColor ?? const Color(0xFF388E3C)) 
-            : const Color(0xFF333333),
-        borderRadius: BorderRadius.circular(4),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(4),
-          onTap: onTap,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            alignment: Alignment.center,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (icon != null) ...[
-                  Icon(icon, size: 14, color: isActive ? Colors.white : Colors.white70),
-                  const SizedBox(width: 4),
-                ],
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: isActive ? Colors.white : Colors.white70,
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
+  Widget _buildMinimalToolbar() {
+    return Container(
+      height: 38,
+      color: Colors.black,
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+      child: Row(
+        children: [
+          Expanded(
+            child: Material(
+              color: _hasSelection ? const Color(0xFF1B5E20) : const Color(0xFF141414),
+              borderRadius: BorderRadius.circular(4),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(4),
+                onTap: _copyText,
+                child: const Center(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.copy, size: 14, color: Colors.white70),
+                      SizedBox(width: 6),
+                      Text(
+                        'COPY',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
+              ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTerminalToolbar() {
-    return Container(
-      height: 44,
-      color: const Color(0xFF1E1E1E),
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        children: [
-          _buildKeyButton('PASTE', onTap: _pasteText),
-          _buildKeyButton(
-            'COPY',
-            isActive: _hasSelection,
-            highlightColor: Colors.green.shade800,
-            onTap: _copyText,
-          ),
-          if (_hasSelection)
-            _buildKeyButton('CLEAR', onTap: () => session.terminalController.clearSelection()),
-          _buildKeyButton('ESC', onTap: () => session.sendKey([0x1B])),
-          _buildKeyButton('TAB', onTap: () => session.sendKey([0x09])),
-          _buildKeyButton('CTRL', isActive: _ctrlPressed, onTap: () {
-            setState(() {
-              _ctrlPressed = !_ctrlPressed;
-            });
-          }),
-          _buildKeyButton('ALT', isActive: _altPressed, onTap: () {
-            setState(() {
-              _altPressed = !_altPressed;
-            });
-          }),
-          _buildKeyButton('CTRL+C', onTap: () => session.sendKey([0x03])),
-          _buildKeyButton('CTRL+Z', onTap: () => session.sendKey([0x1A])),
-          _buildKeyButton('CTRL+D', onTap: () => session.sendKey([0x04])),
-          _buildKeyButton('PGUP', onTap: () => _scrollRelative(-150)),
-          _buildKeyButton('PGDN', onTap: () => _scrollRelative(150)),
-          _buildKeyButton('▲', onTap: () => session.sendKey([0x1B, 0x5B, 0x41])),
-          _buildKeyButton('▼', onTap: () => session.sendKey([0x1B, 0x5B, 0x42])),
-          _buildKeyButton('◀', onTap: () => session.sendKey([0x1B, 0x5B, 0x44])),
-          _buildKeyButton('▶', onTap: () => session.sendKey([0x1B, 0x5B, 0x43])),
-          
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-            width: 1.5,
-            color: Colors.white24,
-          ),
-          
-          _buildKeyButton(
-            'Desktop',
-            icon: Icons.desktop_windows,
-            highlightColor: const Color(0xFF388E3C),
-            onTap: () => setState(() => _activeTabIndex = 1),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Material(
+              color: const Color(0xFF141414),
+              borderRadius: BorderRadius.circular(4),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(4),
+                onTap: _pasteText,
+                child: const Center(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.paste, size: 14, color: Colors.white70),
+                      SizedBox(width: 6),
+                      Text(
+                        'PASTE',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
         ],
       ),
@@ -645,77 +615,71 @@ chmod 755 /data/ubuntu-login.sh
   Widget build(BuildContext context) {
     return WithForegroundTask(
       child: Scaffold(
-        backgroundColor: const Color(0xFF1E1E1E),
+        backgroundColor: Colors.black,
         body: SafeArea(
           top: true,
           bottom: true,
-          child: IndexedStack(
-            index: _activeTabIndex,
+          child: Column(
             children: [
-              Column(
-                children: [
-                  if (session.rootError)
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-                      color: Colors.red.shade900,
-                      child: Row(
-                        children: [
-                          const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
-                          const SizedBox(width: 8),
-                          const Expanded(
-                            child: Text(
-                              'دسترسی روت برقرار نشد! لطفاً در KernelSU مجوز Superuser را تایید کنید.',
-                              style: TextStyle(color: Colors.white, fontSize: 12),
-                            ),
-                          ),
-                          TextButton(
-                            style: TextButton.styleFrom(
-                              backgroundColor: Colors.white12,
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                            ),
-                            onPressed: _setupAndStartSession,
-                            child: const Text('تلاش مجدد', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          ),
-                        ],
+              if (session.rootError)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                  color: Colors.red.shade900,
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 20),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'دسترسی روت برقرار نشد! لطفاً در KernelSU مجوز Superuser را تایید کنید.',
+                          style: TextStyle(color: Colors.white, fontSize: 12),
+                        ),
                       ),
-                    ),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) {
-                        return Listener(
-                          onPointerMove: (e) => _handlePointerMove(e, constraints),
-                          onPointerUp: (_) => _stopAutoScroll(),
-                          onPointerCancel: (_) => _stopAutoScroll(),
-                          child: Scrollbar(
-                            controller: session.terminalScrollController,
-                            child: TerminalView(
-                              session.terminal,
-                              controller: session.terminalController,
-                              scrollController: session.terminalScrollController,
-                              autofocus: true,
-                              backgroundOpacity: 1.0,
-                              textStyle: const TerminalStyle(
-                                fontSize: 13,
-                                fontFamily: 'monospace',
-                              ),
-                              autoResize: true,
-                              simulateScroll: false,
-                              readOnly: session.isInitializing,
-                            ),
-                          ),
-                        );
-                      },
-                    ),
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          backgroundColor: Colors.white12,
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                        ),
+                        onPressed: _setupAndStartSession,
+                        child: const Text('تلاش مجدد', style: TextStyle(color: Colors.white, fontSize: 12)),
+                      ),
+                    ],
                   ),
-                  _buildTerminalToolbar(),
-                ],
+                ),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    return Listener(
+                      onPointerMove: (e) => _handlePointerMove(e, constraints),
+                      onPointerUp: (_) => _stopAutoScroll(),
+                      onPointerCancel: (_) => _stopAutoScroll(),
+                      child: Container(
+                        color: Colors.black,
+                        child: Scrollbar(
+                          controller: session.terminalScrollController,
+                          child: TerminalView(
+                            session.terminal,
+                            controller: session.terminalController,
+                            scrollController: session.terminalScrollController,
+                            theme: pureBlackTerminalTheme,
+                            autofocus: true,
+                            backgroundOpacity: 1.0,
+                            textStyle: const TerminalStyle(
+                              fontSize: 13,
+                              fontFamily: 'monospace',
+                            ),
+                            autoResize: true,
+                            simulateScroll: false,
+                            readOnly: session.isInitializing,
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ),
-              X11View(
-                onBackToTerminal: () {
-                  setState(() => _activeTabIndex = 0);
-                },
-              ),
+              _buildMinimalToolbar(),
             ],
           ),
         ),
