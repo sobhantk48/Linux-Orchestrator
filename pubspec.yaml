@@ -1,0 +1,36 @@
+name: sobhan_terminal
+description: "A customized chroot Ubuntu terminal for Android with a built-in ANSI/VT engine, RTL-aware rendering and KernelSU support."
+publish_to: 'none'
+version: 2.0.0+2
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_pty: ^0.4.1
+  flutter_foreground_task: ^8.17.0
+  path_provider: ^2.1.2
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: "launcher_icon"
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#000000"
+  adaptive_icon_foreground: "assets/icon/app_icon.png"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/rootfs/ubuntu-base-arm64.tar.gz
+    - assets/desktop/
+    - assets/virgl/bin/
+    - assets/virgl/lib/

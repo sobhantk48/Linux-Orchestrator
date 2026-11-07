@@ -1,0 +1,7 @@
+# تحلیل استاتیک پروژه Sobhan Terminal.
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - build/**
+    - android/**

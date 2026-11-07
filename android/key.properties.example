@@ -1,0 +1,6 @@
+# نمونه‌ی پیکربندی امضای release.
+# این فایل را به android/key.properties کپی و مقادیر را پر کنید.
+storePassword=CHANGE_ME
+keyPassword=CHANGE_ME
+keyAlias=sobhan
+storeFile=/absolute/path/to/sobhan-release.jks
