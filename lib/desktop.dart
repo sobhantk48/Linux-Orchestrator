@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show MethodChannel, rootBundle;
 import 'package:path_provider/path_provider.dart';
 
 import 'distro.dart';
@@ -438,7 +438,7 @@ for f in android-run seamless-start seamless-bridge.py; do chmod 755 "$R/usr/loc
 if [ -n "${rootfs:-}" ] && [ "$rootfs" != "$R" ]; then mkdir -p "$rootfs/usr/local/bin"; for f in android-run seamless-start seamless-bridge.py; do cp -f "$R/usr/local/bin/$f" "$rootfs/usr/local/bin/$f"; chmod 755 "$rootfs/usr/local/bin/$f"; done; fi
 ''';
   /// نسخهٔ نصب‌کننده. اگر محتوای اسکریپت‌های بالا عوض شد این رشته را هم عوض کن.
-  static const String installerVersion = 'seamless-20250603';
+  static const String installerVersion = 'seamless-audio-20260601';
 
   /// مسیر نشانگر نسخه داخل chroot (فقط برای گارد شل).
   static const String _versionMarker = '/usr/local/bin/.seamless-version';
@@ -577,6 +577,7 @@ chmod 644 "$M" 2>/dev/null || true
     'procps',
     'pulseaudio',
     'pulseaudio-utils',
+    'pavucontrol',
     'libasound2-plugins',
     'alsa-utils',
   ];
@@ -607,6 +608,7 @@ chmod 644 "$M" 2>/dev/null || true
     'procps-ng',
     'pulseaudio',
     'pulseaudio-utils',
+    'pavucontrol',
     'alsa-utils',
     'alsa-plugins-pulseaudio',
   ];
@@ -633,6 +635,7 @@ chmod 644 "$M" 2>/dev/null || true
     'procps',
     'pulseaudio',
     'pulseaudio-utils',
+    'pavucontrol',
     'alsa-utils',
     'alsa-plugins-pulse',
     'bash',
@@ -657,6 +660,8 @@ chmod 644 "$M" 2>/dev/null || true
     'zenity',
     'procps-ng',
     'pulseaudio',
+    'pulseaudio-utils',
+    'pavucontrol',
     'alsa-utils',
     'alsa-plugins',
     'bash',
@@ -682,6 +687,8 @@ chmod 644 "$M" 2>/dev/null || true
     'zenity',
     'procps',
     'pulseaudio',
+    'pulseaudio-utils',
+    'pavucontrol',
     'alsa-utils',
     'bash',
   ];
@@ -808,6 +815,8 @@ exit 0
     'dbus-x11',
     'x11-xserver-utils',
     'pulseaudio',
+    'pulseaudio-utils',
+    'pavucontrol',
   ];
   static const List<String> _minRpm = <String>[
     'xorg-x11-server-Xvfb',
@@ -817,6 +826,8 @@ exit 0
     'dbus-x11',
     'xorg-x11-apps',
     'pulseaudio',
+    'pulseaudio-utils',
+    'pavucontrol',
   ];
   static const List<String> _minApk = <String>[
     'xvfb',
@@ -824,6 +835,8 @@ exit 0
     'dbus-x11',
     'xsetroot',
     'pulseaudio',
+    'pulseaudio-utils',
+    'pavucontrol',
   ];
   static const List<String> _minPacman = <String>[
     'xorg-server-xvfb',
@@ -831,6 +844,8 @@ exit 0
     'dbus',
     'xorg-xsetroot',
     'pulseaudio',
+    'pulseaudio-utils',
+    'pavucontrol',
   ];
   static const List<String> _minZypper = <String>[
     'xorg-x11-server',
@@ -839,6 +854,8 @@ exit 0
     'xfwm4',
     'dbus-1-x11',
     'pulseaudio',
+    'pulseaudio-utils',
+    'pavucontrol',
   ];
 
   /// Installs Xvfb/XFCE/dbus on demand (only on the first desktop launch).
@@ -1007,8 +1024,20 @@ fi
 echo "[*] Xvfb ready (display :0)" >> "$LOG"
 # SOB-V9-PHXVFB: نشانهٔ فازی.
 echo "__SOB_PHASE__ xvfb" >> "$LOG"
-mkdir -p /tmp/runtime-$(id -u)/pulse 2>/dev/null
-export PULSE_SERVER="127.0.0.1:4713"
+mkdir -p /tmp/runtime-$(id -u)/pulse /tmp/pulse-socket /root/.config/pulse /etc/pulse/client.conf.d 2>/dev/null
+chmod 1777 /tmp /tmp/pulse-socket 2>/dev/null
+cat > /etc/pulse/client.conf.d/99-sobhan.conf <<'PULSE_CLIENT_EOF'
+default-server = unix:/tmp/pulse-socket
+autospawn = no
+PULSE_CLIENT_EOF
+cat > /root/.config/pulse/client.conf <<'PULSE_USER_EOF'
+default-server = unix:/tmp/pulse-socket
+autospawn = no
+PULSE_USER_EOF
+export HOME=/root
+export XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+export PULSE_SERVER="unix:/tmp/pulse-socket"
 if command -v dbus-daemon >/dev/null 2>&1; then
   mkdir -p /var/lib/dbus /run/dbus 2>/dev/null
   [ -s /etc/machine-id ] || dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null
@@ -1016,10 +1045,49 @@ if command -v dbus-daemon >/dev/null 2>&1; then
   dbus-daemon --system --fork >> "$LOG" 2>&1 || true
 fi
 if command -v pulseaudio >/dev/null 2>&1; then
-  pulseaudio --check 2>/dev/null || pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:/tmp/sobhan-desktop/pulse.log --load="module-null-sink sink_name=sobsink" --load="module-native-protocol-tcp port=4713 auth-ip-acl=127.0.0.1;10.0.0.0/8 auth-anonymous=1" >> "$LOG" 2>&1
-  export PULSE_SERVER="127.0.0.1:4713"
-  command -v pactl >/dev/null 2>&1 && pactl load-module module-native-protocol-tcp port=4713 auth-ip-acl=127.0.0.1\;10.0.0.0/8 auth-anonymous=1 >> "$LOG" 2>&1
-  if [ -e /dev/snd ]; then command -v pactl >/dev/null 2>&1 && pactl load-module module-alsa-sink device=default >> "$LOG" 2>&1; fi
+  pulseaudio --kill >/dev/null 2>&1 || true
+  pulseaudio --daemonize=yes --system --disallow-exit --exit-idle-time=-1 --log-target=file:/tmp/sobhan-desktop/pulse.log \
+    --load="module-native-protocol-unix auth-anonymous=1 socket=/tmp/pulse-socket" \
+    --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1;10.0.0.0/8;172.16.0.0/12;192.168.0.0/16 auth-anonymous=1 port=4713" \
+    --load="module-null-sink sink_name=SobhanAudio rate=44100 channels=2 sink_properties=device.description=\"Sobhan_Android_Speaker\"" >> "$LOG" 2>&1 || true
+  export PULSE_SERVER="unix:/tmp/pulse-socket"
+  for _pulse_try in $(seq 1 20); do pactl info >/dev/null 2>&1 && break; sleep 1; done
+  if command -v pactl >/dev/null 2>&1; then
+    pactl set-default-sink SobhanAudio >> "$LOG" 2>&1 || true
+    pactl set-sink-mute SobhanAudio 0 >> "$LOG" 2>&1 || true
+    pactl set-sink-volume SobhanAudio 100% >> "$LOG" 2>&1 || true
+    pactl load-module module-native-protocol-tcp auth-ip-acl=127.0.0.1\;10.0.0.0/8\;172.16.0.0/12\;192.168.0.0/16 auth-anonymous=1 port=4713 >> "$LOG" 2>&1 || true
+  fi
+fi
+# Install the mixer when possible; leave a clickable wrapper for offline/slow setups.
+if ! command -v pavucontrol >/dev/null 2>&1; then
+  case "$( [ -x /usr/bin/apt-get ] && echo apt || [ -x /usr/bin/pacman ] && echo pacman || [ -x /sbin/apk ] && echo apk || [ -x /usr/bin/dnf ] && echo dnf || echo none )" in
+    apt) apt-get update >> "$LOG" 2>&1; apt-get install -y --no-install-recommends pavucontrol pulseaudio-utils >> "$LOG" 2>&1 ;;
+    pacman) pacman -Sy --noconfirm --needed pavucontrol pulseaudio >> "$LOG" 2>&1 ;;
+    apk) apk add --no-cache pavucontrol pulseaudio-utils >> "$LOG" 2>&1 ;;
+    dnf) dnf install -y pavucontrol pulseaudio-utils >> "$LOG" 2>&1 ;;
+  esac
+fi
+if ! command -v pavucontrol >/dev/null 2>&1; then
+  mkdir -p /usr/local/bin
+  cat > /usr/local/bin/pavucontrol <<'PAVU_WRAPPER_EOF'
+#!/bin/sh
+if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends pavucontrol pulseaudio-utils
+elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm --needed pavucontrol pulseaudio
+elif command -v apk >/dev/null 2>&1; then apk add --no-cache pavucontrol pulseaudio-utils
+elif command -v dnf >/dev/null 2>&1; then dnf install -y pavucontrol pulseaudio-utils
+fi
+exec /usr/bin/pavucontrol "$@"
+PAVU_WRAPPER_EOF
+  chmod 755 /usr/local/bin/pavucontrol
+fi
+# Keep the null-sink monitor flowing to Android AudioTrack (one guarded reconnect loop).
+if command -v parec >/dev/null 2>&1 && command -v bash >/dev/null 2>&1; then
+  AUDIO_PID=/tmp/sobhan-audio-stream.pid
+  if [ -f "$AUDIO_PID" ] && kill -0 "$(cat "$AUDIO_PID" 2>/dev/null)" 2>/dev/null; then :; else
+    bash -c 'while true; do parec --format=s16le --rate=44100 --channels=2 --latency-msec=40 -d SobhanAudio.monitor > /dev/tcp/127.0.0.1/4714 2>/dev/null; sleep 1; done' >/dev/null 2>&1 &
+    echo $! > "$AUDIO_PID"
+  fi
 fi
 echo "[*] starting frame_server" >> "$LOG"
 /usr/local/bin/frame_server >> "$LOG" 2>&1 &
@@ -1580,6 +1648,9 @@ echo "__SOB_SOC__${SOC}"
     }
   }
 
+  static const MethodChannel _audioBridgeChannel =
+      MethodChannel('com.sobhan.term/linux_app');
+
   static Future<bool> _startLocked(
     Distro distro, {
     int width = defaultWidth,
@@ -1588,6 +1659,10 @@ echo "__SOB_SOC__${SOC}"
     bool gpuAccel = true,
     String sessionUser = 'root',
   }) async {
+    // Best-effort only: audio bridge failures must never block desktop startup.
+    try {
+      await _audioBridgeChannel.invokeMethod<void>('startAudioBridge');
+    } catch (_) {}
     await installAndroidRun(distro);
     final String res = '${width}x${height}x24';
     final String gpu = await gpuEnv();

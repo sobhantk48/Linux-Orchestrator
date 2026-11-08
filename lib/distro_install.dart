@@ -489,9 +489,8 @@ class DistroInstaller {
         return 'tar -xzf "\$ARCHIVE" -C "\$ROOT"';
       case 'xz':
         // #SOB-XZ-CHAIN
-        // اندروید (toybox) معمولاً xz ندارد؛ پس چند راه پشت سر هم امتحان
-        // می‌شود و در صورت شکست با کد ۲ اعلام می‌کنیم تا Dart دیکودر
-        // نیتیو را صدا بزند.
+        // مسیر پشتیبان בלבד؛ در installFromUrl دیکودر Kotlin اجرا می‌شود
+        // و این زنجیره فقط وقتی native decoder شکست خورد، امتحان می‌شود.
         return _xzChain;
       case 'bzip2':
         return 'tar -xjf "\$ARCHIVE" -C "\$ROOT"';
@@ -511,8 +510,7 @@ class DistroInstaller {
   static const String _xzChain = r'''
 __sobxz_reset() { rm -rf "$ROOT"; mkdir -p "$ROOT"; }
 __sobxz_nonempty() {
-  [ -n "$(ls -A "$ROOT" 2>/dev/null)" ] && return 0
-  return 1
+  [ -e "$ROOT/bin/sh" ] || [ -L "$ROOT/bin/sh" ] || [ -e "$ROOT/usr/bin/sh" ]
 }
 __sobxz_busybox() {
   for b in /data/adb/magisk/busybox /data/adb/ksu/bin/busybox \
@@ -619,7 +617,9 @@ exit 0
     try {
       final out = await _channel.invokeMethod<String>(
         'xzDecompress',
-        <String, String>{'path': archive.path},
+        <String, String>{
+          'path': archive.path,
+        },
       );
       if (out == null || out.isEmpty) return null;
       final tar = File(out);
@@ -1073,23 +1073,24 @@ exit 0
         onProgress: onProgress,
       );
       log('Extracting into $rootDir ...');
-      var extractOut = await _runExtract(archive.path, rootDir, kind);
-      if (!extractOut.contains('__SOB_OK__=extracted') &&
-          kind == 'xz' &&
-          extractOut.contains('__SOB_ERR__=no-xz')) {
-        // #SOB-XZ-NATIVE-FALLBACK
-        log('No xz on device — using the built-in decoder ...');
+      String extractOut;
+      if (kind == 'xz') {
+        // Native XZInputStream first: do not depend on Android shell xz/tar.
+        log('Decompressing .tar.xz with the built-in Android decoder ...');
         final tarPath = await nativeXzToTar(archive);
-        if (tarPath == null) {
-          return const DistroInstallResult(
-              ok: false,
-              message: 'Extraction failed: this phone has no xz decoder '
-                  'and the built-in decoder failed.');
+        if (tarPath != null) {
+          try {
+            extractOut = await _runExtract(tarPath, rootDir, 'tar');
+          } finally {
+            try { await File(tarPath).delete(); } catch (_) {}
+          }
+        } else {
+          // Secondary compatibility fallback only if Kotlin xzDecompress throws.
+          log('Native xz decoder failed — trying device xz/busybox fallback ...');
+          extractOut = await _runExtract(archive.path, rootDir, 'xz');
         }
-        extractOut = await _runExtract(tarPath, rootDir, 'tar');
-        try {
-          await File(tarPath).delete();
-        } catch (_) {}
+      } else {
+        extractOut = await _runExtract(archive.path, rootDir, kind);
       }
       if (!extractOut.contains('__SOB_OK__=extracted')) {
         // #SOB-CLEAN-FAILED: پوشهٔ نیمه‌کاره نماند.
