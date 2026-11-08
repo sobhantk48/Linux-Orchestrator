@@ -59,10 +59,10 @@ class DistroDetector {
   static const String _probeTpl = r'''
 R="__ROOT__"
 echo "__SOB_OSREL_BEGIN__"
-cat "$R/etc/os-release" 2>/dev/null
+if [ -f "$R/etc/os-release" ] || [ -L "$R/etc/os-release" ]; then cat "$R/etc/os-release" 2>/dev/null; elif [ -f "$R/usr/lib/os-release" ] || [ -L "$R/usr/lib/os-release" ]; then cat "$R/usr/lib/os-release" 2>/dev/null; fi
 echo "__SOB_OSREL_END__"
 for c in bin/bash usr/bin/bash bin/zsh usr/bin/zsh bin/fish usr/bin/fish bin/sh usr/bin/sh bin/ash usr/bin/ash bin/busybox usr/bin/busybox; do
-  if [ -x "$R/$c" ]; then echo "__SOB_SHELL__=/$c"; fi
+  if [ -f "$R/$c" ] || [ -L "$R/$c" ]; then echo "__SOB_SHELL__=/$c"; fi
 done
 for m in apt-get apt dnf yum zypper pacman apk xbps-install eopkg nix-env emerge; do
   for d in usr/bin bin usr/sbin sbin usr/local/bin; do
@@ -446,6 +446,8 @@ class DistroInstaller {
   const DistroInstaller._();
 
   static const String lockFile = '/data/.install.lock';
+  static String? _activeLockFile;
+  static String? _activeLockPid;
   static const String manifestFile = '/data/sobhan-distros.json';
 
   static String? archiveKind(String url) {
@@ -568,7 +570,16 @@ fi
     const tpl = r'''
 ARCHIVE="__ARCHIVE__"
 ROOT="__ROOT__"
-if [ ! -f "$ARCHIVE" ]; then echo "__SOB_ERR__=archive-missing"; exit 1; fi
+if [ ! -f "$ARCHIVE" ] || [ ! -s "$ARCHIVE" ]; then echo "__SOB_ERR__=archive-missing"; exit 1; fi
+case "__KIND__" in
+ gzip) tar -tzf "$ARCHIVE" >/dev/null 2>&1 ;;
+ xz) tar -tJf "$ARCHIVE" >/dev/null 2>&1 || { command -v xz >/dev/null 2>&1 && xz -dc "$ARCHIVE" | tar -tf - >/dev/null 2>&1; } ;;
+ bzip2) tar -tjf "$ARCHIVE" >/dev/null 2>&1 ;;
+ zstd) tar --zstd -tf "$ARCHIVE" >/dev/null 2>&1 || { command -v zstd >/dev/null 2>&1 && zstd -dc "$ARCHIVE" | tar -tf - >/dev/null 2>&1; } ;;
+ zip) command -v unzip >/dev/null 2>&1 && unzip -t "$ARCHIVE" >/dev/null 2>&1 ;;
+ *) tar -tf "$ARCHIVE" >/dev/null 2>&1 ;;
+esac
+if [ $? -ne 0 ]; then echo "__SOB_ERR__=archive-integrity"; exit 1; fi
 rm -rf "$ROOT"
 mkdir -p "$ROOT"
 __EXTRACT__
@@ -593,7 +604,8 @@ exit 0
         .replaceAll(
             '__ARCHIVE__', DistroDetector.escapeShellDoubleQuoted(archivePath))
         .replaceAll('__ROOT__', DistroDetector.escapeShellDoubleQuoted(rootDir))
-        .replaceAll('__EXTRACT__', extractCommand(kind));
+        .replaceAll('__EXTRACT__', extractCommand(kind))
+        .replaceAll('__KIND__', kind);
   }
 
   // #SOB-XZ-NATIVE
@@ -620,26 +632,44 @@ exit 0
     }
   }
 
-  static Future<bool> acquireLock() async {
-    // I3: create atomically with noclobber (`set -C`) instead of the
-    // check-then-create sequence, which two callers could both pass.
-    const script = 'L=$lockFile; '
-        'if [ -f "\$L" ] && [ -n "\$(find "\$L" -mmin +60 2>/dev/null)" ]; '
-        'then rm -f "\$L"; fi; '
-        'if (set -C; echo ok > "\$L") 2>/dev/null; '
-        'then echo "__SOB_LOCK_OK__"; else echo "__SOB_LOCKED__"; fi; exit 0';
+  static Future<bool> acquireLock([String? distroId]) async {
+    final id = DistroRegistry.isValidId(distroId ?? '') ? distroId! : 'global';
+    final path = '/data/local/tmp/sobhan_install_$id.lock';
+    const tpl = r'''L="__LOCK__"
+mkdir -p "$(dirname "$L")" 2>/dev/null || exit 1
+if [ -e "$L" ]; then
+  PID=$(cat "$L" 2>/dev/null | tr -cd '0-9')
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo __SOB_LOCKED__; exit 0; fi
+  rm -f "$L" 2>/dev/null
+fi
+( set -C; echo $$ > "$L" ) 2>/dev/null || {
+  PID=$(cat "$L" 2>/dev/null | tr -cd '0-9')
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo __SOB_LOCKED__; exit 0; fi
+  rm -f "$L" 2>/dev/null
+  ( set -C; echo $$ > "$L" ) 2>/dev/null || exit 0
+}
+echo "__SOB_LOCK_OK__=$$"
+exit 0
+''';
     try {
-      final r = await Process.run('su', ['-c', script]);
-      return r.stdout.toString().contains('__SOB_LOCK_OK__');
-    } catch (_) {
-      return false;
-    }
+      final r = await Process.run('su', ['-c', tpl.replaceAll('__LOCK__', path)]);
+      final match = RegExp(r'__SOB_LOCK_OK__=(\d+)').firstMatch(r.stdout.toString());
+      if (match == null) return false;
+      _activeLockFile = path;
+      _activeLockPid = match.group(1);
+      return true;
+    } catch (_) { return false; }
   }
 
   static Future<void> releaseLock() async {
+    final path = _activeLockFile;
+    final pid = _activeLockPid;
+    if (path == null || pid == null) return;
     try {
-      await Process.run('su', ['-c', 'rm -f $lockFile; exit 0']);
+      await Process.run('su', ['-c', 'L="$path"; [ "$(cat "$L" 2>/dev/null)" = "$pid" ] && rm -f "$L"; exit 0']);
     } catch (_) {}
+    _activeLockFile = null;
+    _activeLockPid = null;
   }
 
   /// Max accepted archive size (8 GiB).
@@ -652,53 +682,70 @@ exit 0
   }) async {
     final dir = await getTemporaryDirectory();
     final target = File('${dir.path}/$fileName');
-    if (await target.exists()) {
-      await target.delete();
-    }
+    final part = File('${target.path}.part');
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 30);
     client.autoUncompress = false;
-    var ok = false;
     try {
+      final offset = await part.exists() ? await part.length() : 0;
       final request = await client.getUrl(Uri.parse(url));
       request.headers.set(HttpHeaders.userAgentHeader, 'SobhanTerminal/2.0');
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+      if (offset > 0) request.headers.set(HttpHeaders.rangeHeader, 'bytes=$offset-');
       final response = await request.close();
-      if (response.statusCode != HttpStatus.ok) {
-        throw HttpException('HTTP ${response.statusCode} while downloading');
-      }
-      final total = response.contentLength;
-      if (total > maxDownloadBytes) {
-        throw HttpException('Archive too large ($total bytes)');
-      }
-      final sink = target.openWrite();
-      var received = 0;
+      if (offset > 0 && response.statusCode == HttpStatus.ok) await part.writeAsBytes(const <int>[], flush: true);
+      if (response.statusCode != HttpStatus.ok && response.statusCode != HttpStatus.partialContent) throw HttpException('HTTP ${response.statusCode} while downloading');
+      final append = offset > 0 && response.statusCode == HttpStatus.partialContent;
+      final baseBytes = append ? offset : 0;
+      final total = response.contentLength < 0 ? -1 : baseBytes + response.contentLength;
+      if (total > maxDownloadBytes) throw HttpException('Archive too large ($total bytes)');
+      final sink = part.openWrite(mode: append ? FileMode.append : FileMode.write);
+      var received = baseBytes;
       try {
         await for (final chunk in response) {
           received += chunk.length;
-          if (received > maxDownloadBytes) {
-            throw const HttpException('Archive exceeds size limit');
-          }
+          if (received > maxDownloadBytes) throw const HttpException('Archive exceeds size limit');
           sink.add(chunk);
           onProgress?.call(received, total);
         }
-      } finally {
-        await sink.flush();
-        await sink.close();
-      }
-      if (total > 0 && received != total) {
-        throw HttpException('Incomplete download ($received of $total bytes)');
-      }
-      ok = true;
-      return target;
-    } finally {
-      client.close(force: true);
-      if (!ok) {
-        try {
-          if (await target.exists()) await target.delete();
-        } catch (_) {}
-      }
-    }
+      } finally { await sink.flush(); await sink.close(); }
+      final size = await part.length();
+      if (total > 0 && size != total) throw HttpException('Incomplete download ($size of $total bytes)');
+      if (size <= 0) throw const HttpException('Empty download');
+      if (await target.exists()) await target.delete();
+      return await part.rename(target.path);
+    } finally { client.close(force: true); }
+  }
+
+  static Future<bool> repairDistro(Distro distro) async {
+    const tpl = r'''R="__ROOT__"
+mkdir -p "$R/etc" "$R/tmp" 2>/dev/null
+chmod 1777 "$R/tmp" 2>/dev/null
+# Never remove package-manager locks while a manager may still be using them.
+# pgrep -x avoids matching this shell merely because its script mentions a name.
+busy=0
+if command -v pgrep >/dev/null 2>&1; then
+ for p in apt apt-get dpkg dpkg-deb pacman dnf yum apk zypper rpm unattended-upgrade packagekitd; do
+  pgrep -x "$p" >/dev/null 2>&1 && busy=1
+ done
+else
+ # Fail closed if the process check is unavailable; never risk deleting live locks.
+ busy=1
+fi
+if [ "$busy" -eq 0 ]; then
+ for f in "$R"/var/lib/dpkg/lock* "$R/var/lib/apt/lists/lock" "$R/var/cache/apt/archives/lock" "$R/var/lib/pacman/db.lck" "$R/lib/apk/db/lock" "$R/var/lib/rpm/.rpm.lock"; do
+  [ -e "$f" ] && rm -f "$f" 2>/dev/null
+ done
+fi
+rm -f "$R/etc/resolv.conf" 2>/dev/null
+printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\noptions edns0 timeout:5 attempts:2\n' > "$R/etc/resolv.conf"
+chmod 644 "$R/etc/resolv.conf" 2>/dev/null
+echo __SOB_REPAIR_OK__
+''';
+    try {
+      final out = await Process.run('su', ['-c', tpl.replaceAll('__ROOT__', DistroDetector.escapeShellDoubleQuoted(distro.rootDir))]);
+      return out.stdout.toString().contains('__SOB_REPAIR_OK__');
+    } catch (_) { return false; }
   }
 
   /// ONE single `su` round-trip.  For every known distro it verifies that
@@ -714,7 +761,7 @@ exit 0
     // معیار نصب‌بودن «پوستهٔ دقیق» نیست؛ چون آلپاین /bin/bash ندارد و
     // بعضی rootfs ها مسیر پوسته را جابه‌جا می‌کنند. کافی است etc/os-release
     // یا etc به‌همراه یکی از پوسته‌های رایج موجود باشد.
-    const tpl = r'''if [ -e "__ROOT__/etc/os-release" ] || { [ -d "__ROOT__/etc" ] && { [ -e "__ROOT__/bin/sh" ] || [ -e "__ROOT__/bin/bash" ] || [ -e "__ROOT__/usr/bin/sh" ] || [ -e "__ROOT__/usr/bin/busybox" ] || [ -e "__ROOT____SHELL__" ]; }; }; then echo "__ID__:$(du -sk "__ROOT__" 2>/dev/null | awk '{print $1}')"; fi''';
+    const tpl = r'''if [ -f "__ROOT__/etc/os-release" ] || [ -L "__ROOT__/etc/os-release" ] || [ -f "__ROOT__/usr/lib/os-release" ] || [ -L "__ROOT__/usr/lib/os-release" ] || [ -d "__ROOT__/usr/bin" ] || { [ -d "__ROOT__/etc" ] && { [ -f "__ROOT__/bin/bash" ] || [ -L "__ROOT__/bin/bash" ] || [ -f "__ROOT__/bin/sh" ] || [ -L "__ROOT__/bin/sh" ] || [ -f "__ROOT__/bin/ash" ] || [ -L "__ROOT__/bin/ash" ] || [ -f "__ROOT__/usr/bin/bash" ] || [ -L "__ROOT__/usr/bin/bash" ] || [ -f "__ROOT__/usr/bin/sh" ] || [ -L "__ROOT__/usr/bin/sh" ] || [ -f "__ROOT__/usr/bin/zsh" ] || [ -L "__ROOT__/usr/bin/zsh" ]; }; }; then echo "__ID__:$(du -sk "__ROOT__" 2>/dev/null | awk '{print $1}')"; fi''';
     final checks = DistroRegistry.all.map((d) {
       final root = DistroDetector.escapeShellDoubleQuoted(d.rootDir);
       final shell = DistroDetector.escapeShellDoubleQuoted(d.shell);
@@ -1014,7 +1061,7 @@ exit 0
 
     final rootDir = DistroRegistry.rootDirFor(id);
 
-    if (!await acquireLock()) {
+    if (!await acquireLock(id)) {
       return const DistroInstallResult(
           ok: false, message: 'Another install is already running.');
     }
@@ -1059,11 +1106,15 @@ exit 0
         await archive.delete();
       } catch (_) {}
 
+      if (id == 'ubuntu') {
+        await Process.run('su', ['-c', 'mkdir -p /data/rootfs; [ -e /data/ubuntu ] || ln -s /data/rootfs/ubuntu /data/ubuntu']);
+      }
       log('Setting up network (DNS) ...');
       if (!await setupNetwork(rootDir)) {
         log('Warning: could not write /etc/resolv.conf inside the distro.');
       }
 
+      await repairDistro(Distro(id: id, label: id, family: DistroFamily.generic, rootDir: rootDir, loginScript: DistroRegistry.loginScriptFor(id), shell: '/bin/sh'));
       log('Detecting distribution ...');
       final probeResult = await Process.run('su', ['-c', DistroDetector.probeScript(rootDir)]);
       final probe = DistroDetector.parseProbe(probeResult.stdout.toString());

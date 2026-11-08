@@ -9,8 +9,7 @@ enum DistroFamily { debian, redhat, suse, arch, alpine, generic }
 ///
 /// [rootDir] / [loginScript] are explicit (not derived) so that the original
 /// Ubuntu layout (`/data/ubuntu`, `/data/ubuntu-login.sh`) is preserved
-/// byte-for-byte for existing installs, while new distros live under
-/// `/data/rootfs/<id>`.
+/// via a compatibility link, while every distro uses `/data/rootfs/<id>`.
 class Distro {
   const Distro({
     required this.id,
@@ -147,7 +146,7 @@ class DistroRegistry {
     id: 'ubuntu',
     label: 'Ubuntu',
     family: DistroFamily.debian,
-    rootDir: '/data/ubuntu',
+    rootDir: '/data/rootfs/ubuntu',
     loginScript: '/data/ubuntu-login.sh',
     shell: '/bin/bash',
     bundledAsset: 'assets/rootfs/ubuntu-base-arm64.tar.gz',

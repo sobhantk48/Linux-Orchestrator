@@ -268,7 +268,7 @@ class DesktopSession {
   static const String _androidRunInstaller = r'''
 R="__ROOT__"
 [ -d "$R" ] || exit 0
-mkdir -p "$R/usr/local/bin" "$R/tmp/.X11-unix" "$R/tmp/xvfb_99"; chmod 1777 "$R/tmp/xvfb_99" 2>/dev/null || true
+mkdir -p "$R/usr/local/bin" "$R/tmp/.X11-unix" "$R/tmp/.virgl_test" "$R/tmp/xvfb_99" "$R/dev/socket/virgl"; chmod 1777 "$R/tmp/.X11-unix" "$R/tmp/.virgl_test"; chmod 1777 "$R/tmp/xvfb_99" 2>/dev/null || true
 for d in /proc/[0-9]*; do
  [ -r "$d/cmdline" ] || continue
  case "$(tr '\000' ' ' <"$d/cmdline" 2>/dev/null)" in *seamless-bridge.py*) kill -9 "${d#/proc/}" 2>/dev/null ;; esac
@@ -556,6 +556,14 @@ chmod 644 "$M" 2>/dev/null || true
   /// Debian/Ubuntu naming (kept for backwards compatibility).
   static const List<String> xfcePackages = <String>[
     'xvfb',
+    'xserver-xorg-core',
+    'xserver-xorg-video-fbdev',
+    'libgl1-mesa-dri',
+    'libglx-mesa0',
+    'libegl1',
+    'libgbm1',
+    'libepoxy0',
+    'mesa-utils',
     'xfce4',
     'dbus-x11',
     'libturbojpeg0',
@@ -576,6 +584,11 @@ chmod 644 "$M" 2>/dev/null || true
   /// Fedora / RHEL / CentOS / Rocky / Alma (dnf or yum).
   static const List<String> xfcePackagesRpm = <String>[
     'xorg-x11-server-Xvfb',
+    'mesa-dri-drivers',
+    'mesa-libGL',
+    'mesa-libEGL',
+    'mesa-libgbm',
+    'libepoxy',
     'xfce4-session',
     'xfce4-panel',
     'xfce4-settings',
@@ -601,6 +614,11 @@ chmod 644 "$M" 2>/dev/null || true
   /// Alpine (apk).
   static const List<String> xfcePackagesApk = <String>[
     'xvfb',
+    'mesa-dri-gallium',
+    'mesa-gl',
+    'mesa-egl',
+    'mesa-gbm',
+    'libepoxy',
     'xfce4',
     'xfce4-terminal',
     'dbus-x11',
@@ -623,6 +641,9 @@ chmod 644 "$M" 2>/dev/null || true
   /// Arch / Manjaro / BlackArch (pacman).
   static const List<String> xfcePackagesPacman = <String>[
     'xorg-server-xvfb',
+    'mesa',
+    'libglvnd',
+    'libepoxy',
     'xfce4',
     'xfce4-terminal',
     'dbus',
@@ -669,10 +690,10 @@ chmod 644 "$M" 2>/dev/null || true
 R="__ROOT__"
 have() { [ -x "$R/usr/bin/$1" ] || [ -x "$R/usr/sbin/$1" ] || [ -x "$R/bin/$1" ] || [ -x "$R/sbin/$1" ]; }
 pkgmgr() {
-  if [ -x "$R/usr/bin/apt-get" ]; then echo apt; return; fi
-  if [ -x "$R/usr/bin/dnf" ]; then echo dnf; return; fi
+  if [ -x "$R/usr/bin/apt-get" ] || [ -x "$R/bin/apt-get" ]; then echo apt; return; fi
+  if [ -x "$R/usr/bin/dnf" ] || [ -x "$R/bin/dnf" ]; then echo dnf; return; fi
   if [ -x "$R/usr/bin/yum" ]; then echo yum; return; fi
-  if [ -x "$R/usr/bin/pacman" ]; then echo pacman; return; fi
+  if [ -x "$R/usr/bin/pacman" ] || [ -x "$R/bin/pacman" ]; then echo pacman; return; fi
   if [ -x "$R/usr/bin/zypper" ]; then echo zypper; return; fi
   if [ -x "$R/sbin/apk" ]; then echo apk; return; fi
   if [ -x "$R/usr/bin/apk" ]; then echo apk; return; fi
@@ -710,7 +731,7 @@ cleanup_mounts() {
 }
 trap cleanup_mounts EXIT
 
-if have Xvfb && have xfce4-session && have dbus-launch && have xsetroot && have pulseaudio; then
+if have Xvfb && have xfce4-session && have dbus-launch && have dbus-daemon && have xsetroot && have pulseaudio; then
   echo "__SOB_XFCE_PRESENT__"
   exit 0
 fi
@@ -829,6 +850,7 @@ exit 0
   }) async {
     await installAndroidRun(distro);
     // #SOB-NET-SETUP: قبل از نصب آنلاین، DNS داخل توزیع ست می‌شود.
+    await DistroInstaller.repairDistro(distro);
     await DistroInstaller.setupNetwork(distro.rootDir);
     // #SOB-XFCE-MULTI: بسته‌ها بر اساس خانوادهٔ توزیع انتخاب می‌شوند.
     final List<String> pkgs;
@@ -930,9 +952,7 @@ else
 fi
 RES="${1:-__RES__}"
 LOG=/tmp/sobhan-desktop/start.log
-mkdir -p /data/ubuntu/tmp 2>/dev/null
-echo "[$(date +%H:%M:%S)] desktop start script invoked argv=$* DISPLAY=${DISPLAY:-unset}" >> /data/ubuntu/tmp/seamless_debug.log 2>/dev/null
-chmod 666 /data/ubuntu/tmp/seamless_debug.log 2>/dev/null
+echo "[$(date +%H:%M:%S)] desktop start script invoked argv=$* DISPLAY=${DISPLAY:-unset}" >> "$LOG" 2>/dev/null
 mkdir -p /tmp/sobhan-desktop 2>/dev/null
 # SOB-V9-LOCK: تک‌نمونه‌سازیِ مهمان — نمونهٔ زندهٔ قدیمی را اول می‌کشیم تا
 # پاک‌سازیِ دیرهنگامش سرورهای تازهٔ همین اجرا را از بین نبرد.
@@ -957,9 +977,7 @@ done
 command -v pkill >/dev/null 2>&1 && pkill -9 -x dbus-launch 2>/dev/null
 sleep 1
 rm -rf /tmp/.X11-unix/X0 /tmp/.X0-lock /tmp/runtime-* 2>/dev/null
-mkdir -p /data/ubuntu/tmp 2>/dev/null
-echo "[$(date +%H:%M:%S)] desktop startup cleanup complete uid=$(id -u)" >> /data/ubuntu/tmp/seamless_debug.log 2>/dev/null
-chmod 666 /data/ubuntu/tmp/seamless_debug.log 2>/dev/null
+echo "[$(date +%H:%M:%S)] desktop startup cleanup complete uid=$(id -u)" >> "$LOG" 2>/dev/null
 rm -f /tmp/sobhan_x11_* 2>/dev/null
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp /tmp/.X11-unix 2>/dev/null
@@ -990,12 +1008,18 @@ echo "[*] Xvfb ready (display :0)" >> "$LOG"
 # SOB-V9-PHXVFB: نشانهٔ فازی.
 echo "__SOB_PHASE__ xvfb" >> "$LOG"
 mkdir -p /tmp/runtime-$(id -u)/pulse 2>/dev/null
-export PULSE_SERVER="unix:/tmp/runtime-$(id -u)/pulse/native"
+export PULSE_SERVER="127.0.0.1:4713"
+if command -v dbus-daemon >/dev/null 2>&1; then
+  mkdir -p /var/lib/dbus /run/dbus 2>/dev/null
+  [ -s /etc/machine-id ] || dbus-uuidgen --ensure=/etc/machine-id 2>/dev/null
+  [ -s /var/lib/dbus/machine-id ] || cp /etc/machine-id /var/lib/dbus/machine-id 2>/dev/null
+  dbus-daemon --system --fork >> "$LOG" 2>&1 || true
+fi
 if command -v pulseaudio >/dev/null 2>&1; then
-  pulseaudio --check 2>/dev/null || pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:/tmp/sobhan-desktop/pulse.log --load="module-null-sink sink_name=sobsink" >> "$LOG" 2>&1
-  if [ -e /dev/snd ]; then
-    command -v pactl >/dev/null 2>&1 && pactl load-module module-alsa-sink device=default >> "$LOG" 2>&1
-  fi
+  pulseaudio --check 2>/dev/null || pulseaudio --daemonize=yes --exit-idle-time=-1 --log-target=file:/tmp/sobhan-desktop/pulse.log --load="module-null-sink sink_name=sobsink" --load="module-native-protocol-tcp port=4713 auth-ip-acl=127.0.0.1;10.0.0.0/8 auth-anonymous=1" >> "$LOG" 2>&1
+  export PULSE_SERVER="127.0.0.1:4713"
+  command -v pactl >/dev/null 2>&1 && pactl load-module module-native-protocol-tcp port=4713 auth-ip-acl=127.0.0.1\;10.0.0.0/8 auth-anonymous=1 >> "$LOG" 2>&1
+  if [ -e /dev/snd ]; then command -v pactl >/dev/null 2>&1 && pactl load-module module-alsa-sink device=default >> "$LOG" 2>&1; fi
 fi
 echo "[*] starting frame_server" >> "$LOG"
 /usr/local/bin/frame_server >> "$LOG" 2>&1 &
@@ -1434,7 +1458,16 @@ fi
 mkdir -p "$R/tmp/sobhan-desktop"
 mountpoint -q "$R/tmp/sobhan-desktop" || mount --bind "__STAGE__" "$R/tmp/sobhan-desktop" 2>/dev/null
 chmod 0777 "$R/tmp/sobhan-desktop" 2>/dev/null
-mkdir -p "$R/dev" "$R/dev/pts" "$R/proc" "$R/sys" 2>/dev/null
+mkdir -p "$R/dev" "$R/dev/pts" "$R/proc" "$R/sys" "$R/tmp/.X11-unix" "$R/tmp/.virgl_test" /tmp/.X11-unix /tmp/.virgl_test /dev/socket/virgl 2>/dev/null
+chmod 1777 /tmp /tmp/.X11-unix /tmp/.virgl_test "$R/tmp" "$R/tmp/.X11-unix" "$R/tmp/.virgl_test" /dev/socket/virgl 2>/dev/null
+mountpoint -q "$R/tmp/.X11-unix" || mount --bind /tmp/.X11-unix "$R/tmp/.X11-unix" 2>/dev/null
+mountpoint -q "$R/tmp/.virgl_test" || mount --bind /tmp/.virgl_test "$R/tmp/.virgl_test" 2>/dev/null
+mkdir -p "$R/dev/socket/virgl" 2>/dev/null
+mountpoint -q "$R/dev/socket/virgl" || mount --bind /dev/socket/virgl "$R/dev/socket/virgl" 2>/dev/null
+# Stable machine-id lets dbus-daemon --system start in minimal rootfs images.
+if [ ! -s "$R/etc/machine-id" ]; then (cat /proc/sys/kernel/random/uuid 2>/dev/null || od -An -N16 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n') | tr -d '-' > "$R/etc/machine-id"; fi
+mkdir -p "$R/var/lib/dbus" 2>/dev/null
+cp "$R/etc/machine-id" "$R/var/lib/dbus/machine-id" 2>/dev/null
 mountpoint -q "$R/dev" || mount --bind /dev "$R/dev" 2>/dev/null
 mountpoint -q "$R/dev/pts" || mount --bind /dev/pts "$R/dev/pts" 2>/dev/null
 mountpoint -q "$R/proc" || mount -t proc proc "$R/proc" 2>/dev/null
