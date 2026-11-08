@@ -638,14 +638,14 @@ exit 0
     const tpl = r'''L="__LOCK__"
 mkdir -p "$(dirname "$L")" 2>/dev/null || exit 1
 if [ -e "$L" ]; then
-  PID=$(cat "\$L" 2>/dev/null | tr -cd '0-9')
+  PID=$(cat "$L" 2>/dev/null | tr -cd '0-9')
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo __SOB_LOCKED__; exit 0; fi
-  rm -f "\$L" 2>/dev/null
+  rm -f "$L" 2>/dev/null
 fi
 ( set -C; echo $$ > "$L" ) 2>/dev/null || {
-  PID=$(cat "\$L" 2>/dev/null | tr -cd '0-9')
+  PID=$(cat "$L" 2>/dev/null | tr -cd '0-9')
   if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then echo __SOB_LOCKED__; exit 0; fi
-  rm -f "\$L" 2>/dev/null
+  rm -f "$L" 2>/dev/null
   ( set -C; echo $$ > "$L" ) 2>/dev/null || exit 0
 }
 echo "__SOB_LOCK_OK__=$$"
@@ -666,7 +666,7 @@ exit 0
     final pid = _activeLockPid;
     if (path == null || pid == null) return;
     try {
-      await Process.run('su', ['-c', 'L="$path"; [ "$(cat "\$L" 2>/dev/null)" = "$pid" ] && rm -f "\$L"; exit 0']);
+      await Process.run('su', ['-c', ' [ "\$(cat "$path" 2>/dev/null)" = "$pid" ] && rm -f "$path"; exit 0']);
     } catch (_) {}
     _activeLockFile = null;
     _activeLockPid = null;
